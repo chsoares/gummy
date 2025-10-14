@@ -1,11 +1,11 @@
 package session
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/chsoares/gummy/internal/shell"
 	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
@@ -395,32 +396,86 @@ func (m *Manager) ShellSession() error {
 
 // StartMenu inicia o loop do menu principal
 func (m *Manager) StartMenu() {
+	// Setup readline with history
+	homeDir, _ := os.UserHomeDir()
+	historyFile := filepath.Join(homeDir, ".gummy", "history")
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Create .gummy directory if it doesn't exist
+	os.MkdirAll(filepath.Join(homeDir, ".gummy"), 0755)
+
+	rl, err := readline.NewEx(&readline.Config{
+		HistoryFile:            historyFile,
+		HistoryLimit:           1000,
+		DisableAutoSaveHistory: false,
+		InterruptPrompt:        "^C",
+		EOFPrompt:              "",
+		HistorySearchFold:      true,
+	})
+	if err != nil {
+		fmt.Printf("Warning: readline init failed, using basic input: %v\n", err)
+		m.startMenuBasic()
+		return
+	}
+	defer rl.Close()
 
 	for {
 		// Só mostra prompt e lê se estivermos no menu
 		if m.menuActive {
 			// Show appropriate prompt based on selected session
 			if m.selectedSession != nil {
-				fmt.Print(ui.PromptWithSession(m.selectedSession.NumID))
+				rl.SetPrompt(ui.PromptWithSession(m.selectedSession.NumID))
 			} else {
-				fmt.Print(ui.Prompt())
+				rl.SetPrompt(ui.Prompt())
 			}
 
-			if !scanner.Scan() {
+			line, err := rl.Readline()
+			if err != nil {
+				if err == readline.ErrInterrupt {
+					// Ctrl+C on empty line exits
+					if len(line) == 0 {
+						fmt.Println() // Newline after ^C
+						fmt.Println(ui.Success("Goodbye!"))
+						os.Exit(0)
+					} else {
+						continue
+					}
+				} else if err == io.EOF {
+					// Ignore EOF completely (Ctrl+D, Delete key, etc)
+					// Only exit via Ctrl+C or "exit" command
+					continue
+				}
 				break
 			}
 
-			command := strings.TrimSpace(scanner.Text())
+			command := strings.TrimSpace(line)
 			if command == "" {
 				continue
 			}
 
 			m.handleCommand(command)
 		}
-		// Se não estivermos no menu, aguarda até voltar
-		// Isso será modificado quando UseSession retornar
+	}
+}
+
+// startMenuBasic is a fallback for when readline fails
+func (m *Manager) startMenuBasic() {
+	for {
+		if m.menuActive {
+			if m.selectedSession != nil {
+				fmt.Print(ui.PromptWithSession(m.selectedSession.NumID))
+			} else {
+				fmt.Print(ui.Prompt())
+			}
+
+			var command string
+			fmt.Scanln(&command)
+			command = strings.TrimSpace(command)
+			if command == "" {
+				continue
+			}
+
+			m.handleCommand(command)
+		}
 	}
 }
 
@@ -472,11 +527,15 @@ func (m *Manager) handleCommand(command string) {
 	case "clear", "cls":
 		fmt.Print("\033[2J\033[H")
 	case "upload":
-		if len(parts) < 3 {
-			fmt.Println(ui.Error("Usage: upload <local_path> <remote_path>"))
+		if len(parts) < 2 {
+			fmt.Println(ui.Error("Usage: upload <local_path> [remote_path]"))
 			return
 		}
-		m.handleUpload(parts[1], parts[2])
+		remotePath := ""
+		if len(parts) >= 3 {
+			remotePath = parts[2]
+		}
+		m.handleUpload(parts[1], remotePath)
 	case "download":
 		if len(parts) < 2 {
 			fmt.Println(ui.Error("Usage: download <remote_path> [local_path]"))
@@ -504,14 +563,12 @@ func (m *Manager) showHelp() {
 	fmt.Println(ui.Command("sessions, list, ls              - List active sessions"))
 	fmt.Println(ui.Command("use <id>                       - Select session with given ID"))
 	fmt.Println(ui.Command("shell                          - Enter interactive shell (requires selected session)"))
-	fmt.Println(ui.Command("upload <local> <remote>        - Upload file to remote system"))
+	fmt.Println(ui.Command("upload <local> [remote]        - Upload file to remote system"))
 	fmt.Println(ui.Command("download <remote> [local]      - Download file from remote system"))
 	fmt.Println(ui.Command("kill <id>                      - Kill session with given ID"))
 	fmt.Println(ui.Command("help, h                        - Show this help"))
 	fmt.Println(ui.Command("clear, cls                     - Clear screen"))
 	fmt.Println(ui.Command("exit, quit, q                  - Exit Gummy"))
-	fmt.Println()
-	fmt.Println(ui.HelpInfo("Note: File transfer works best BEFORE entering shell mode"))
 	fmt.Println()
 }
 

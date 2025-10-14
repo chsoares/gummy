@@ -44,7 +44,7 @@ func New(conn net.Conn, sessionID string) *Transferer {
 
 // Upload sends a local file to the remote system
 // localPath: path to local file
-// remotePath: destination path on remote system
+// remotePath: destination path on remote system (if empty, uses filename in remote cwd)
 func (t *Transferer) Upload(localPath, remotePath string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -52,8 +52,16 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 		return fmt.Errorf("failed to read local file: %w", err)
 	}
 
+	// If remotePath is empty, use just the filename (will go to remote cwd)
+	if remotePath == "" {
+		remotePath = filepath.Base(localPath)
+	}
+
 	fileSize := len(data)
 	fmt.Println(ui.Uploading(fmt.Sprintf("Uploading %s (%s)...", filepath.Base(localPath), formatSize(fileSize))))
+
+	// Drain leftover data from previous shell interactions
+	t.drainConnection()
 
 	// Encode to base64
 	encoded := base64.StdEncoding.EncodeToString(data)
@@ -65,48 +73,101 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 	// Send file in chunks
 	config := DefaultConfig()
 	chunks := splitIntoChunks(encoded, config.ChunkSize)
-	totalChunks := len(chunks)
 
-	// Create remote file and prepare for writing
+	// Create remote file and prepare for writing (silently)
 	setupCommands := []string{
 		fmt.Sprintf("rm -f %s.b64 2>/dev/null", remotePath), // Clean any previous temp file
 		fmt.Sprintf("touch %s.b64", remotePath),              // Create temp base64 file
 	}
 
 	for _, cmd := range setupCommands {
-		if err := t.sendCommand(cmd); err != nil {
-			return fmt.Errorf("setup failed: %w", err)
-		}
+		t.conn.Write([]byte(cmd + "\n"))
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Send chunks with progress
-	for i, chunk := range chunks {
+	// Send chunks with progress (only for files > 100KB)
+	bytesSent := 0
+	lastProgressUpdate := 0
+
+	for _, chunk := range chunks {
 		// Append chunk to remote file
 		cmd := fmt.Sprintf("echo '%s' >> %s.b64", chunk, remotePath)
-		if err := t.sendCommand(cmd); err != nil {
-			return fmt.Errorf("failed to send chunk %d: %w", i, err)
-		}
+		t.conn.Write([]byte(cmd + "\n"))
+		time.Sleep(30 * time.Millisecond)
 
-		// Show progress
-		t.showProgress(i+1, totalChunks, fileSize)
+		bytesSent += len(chunk)
+
+		// Show progress every 100KB for large files
+		if fileSize > 100*1024 && bytesSent-lastProgressUpdate >= 100*1024 {
+			fmt.Printf("\r%-50s\r Uploading... %s", "", formatSize(bytesSent))
+			lastProgressUpdate = bytesSent
+		}
 	}
 
-	fmt.Println() // New line after progress bar
+	// Clear progress line if we showed it
+	if fileSize > 100*1024 {
+		fmt.Printf("\r%-50s\r", "")
+	}
 
 	// Decode base64 and save final file
 	decodeCmd := fmt.Sprintf("base64 -d %s.b64 > %s && rm %s.b64", remotePath, remotePath, remotePath)
-	if err := t.sendCommand(decodeCmd); err != nil {
-		return fmt.Errorf("failed to decode file: %w", err)
+	t.conn.Write([]byte(decodeCmd + "\n"))
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain output from all commands
+	t.drainConnection()
+
+	// Verify checksum with markers (like download)
+	marker := "GUMMY_MD5_START"
+	endMarker := "GUMMY_MD5_END"
+	cmd := fmt.Sprintf("echo %s; md5sum %s 2>/dev/null | awk '{print $1}'; echo %s", marker, remotePath, endMarker)
+	t.conn.Write([]byte(cmd + "\n"))
+	time.Sleep(300 * time.Millisecond)
+
+	// Read MD5 response
+	var output strings.Builder
+	buffer := make([]byte, 2048)
+	t.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	for {
+		n, err := t.conn.Read(buffer)
+		if err != nil {
+			break
+		}
+		if n > 0 {
+			output.WriteString(string(buffer[:n]))
+			if strings.Contains(output.String(), endMarker) {
+				break
+			}
+		}
 	}
 
-	// Verify checksum (optional - best effort)
-	remoteChecksum, err := t.getRemoteMD5(remotePath)
-	if err == nil && remoteChecksum == checksum {
-		fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
-	} else {
-		fmt.Println(ui.Success("Upload complete!"))
+	t.conn.SetReadDeadline(time.Time{})
+
+	// Extract MD5
+	fullOutput := output.String()
+	startIdx := strings.LastIndex(fullOutput, marker)
+	if startIdx != -1 {
+		endIdx := strings.Index(fullOutput[startIdx:], endMarker)
+		if endIdx != -1 {
+			content := fullOutput[startIdx+len(marker):startIdx+endIdx]
+			lines := strings.Split(content, "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if len(line) == 32 && isHex(line) {
+					if line == checksum {
+						fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
+						t.drainConnection()
+						return nil
+					}
+				}
+			}
+		}
 	}
 
+	// Fallback if MD5 check failed
+	fmt.Println(ui.Success("Upload complete!"))
+	t.drainConnection()
 	return nil
 }
 
@@ -134,28 +195,45 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Read output until end marker
+	// Read output with progress indication
 	var output strings.Builder
 	buffer := make([]byte, 8192)
-	t.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	totalBytes := 0
+	lastProgressUpdate := 0
 
-	foundEnd := false
-	for !foundEnd {
+	for {
+		// Reset deadline on each read
+		t.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
 		n, err := t.conn.Read(buffer)
 		if err != nil {
-			if strings.Contains(output.String(), endMarker) {
-				break
-			}
-			return fmt.Errorf("timeout reading file")
+			// Timeout - break and check what we have
+			break
 		}
 
 		if n > 0 {
-			chunk := string(buffer[:n])
-			output.WriteString(chunk)
+			output.WriteString(string(buffer[:n]))
+			totalBytes += n
 
-			if strings.Contains(chunk, endMarker) {
-				foundEnd = true
-				break
+			// Show progress every 100KB to avoid spam
+			if totalBytes-lastProgressUpdate >= 100*1024 {
+				// Clear line and show progress
+				fmt.Printf("\r%-50s\rReceiving data... %s", "", formatSize(totalBytes))
+				lastProgressUpdate = totalBytes
+			}
+
+			// Check if we have complete data: end marker AFTER last start marker
+			currentOutput := output.String()
+			lastStartIdx := strings.LastIndex(currentOutput, marker)
+			if lastStartIdx != -1 {
+				remainingAfterStart := currentOutput[lastStartIdx:]
+				if strings.Contains(remainingAfterStart, endMarker) {
+					// Complete! Clear progress line
+					if totalBytes > 100*1024 {
+						fmt.Printf("\r%-50s\r", "")
+					}
+					break
+				}
 			}
 		}
 	}
@@ -217,47 +295,6 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 	return nil
 }
 
-// sendCommand sends a command to remote shell
-func (t *Transferer) sendCommand(cmd string) error {
-	_, err := t.conn.Write([]byte(cmd + "\n"))
-	if err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-	time.Sleep(50 * time.Millisecond) // Small delay for command processing
-	return nil
-}
-
-// getRemoteMD5 gets MD5 checksum of remote file
-func (t *Transferer) getRemoteMD5(remotePath string) (string, error) {
-	// Try md5sum command
-	cmd := fmt.Sprintf("md5sum %s 2>/dev/null | awk '{print $1}'", remotePath)
-	t.conn.Write([]byte(cmd + "\n"))
-	time.Sleep(200 * time.Millisecond)
-
-	// Read response (best effort)
-	buffer := make([]byte, 1024)
-	t.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-	n, err := t.conn.Read(buffer)
-	t.conn.SetReadDeadline(time.Time{})
-
-	if err != nil {
-		return "", err
-	}
-
-	response := strings.TrimSpace(string(buffer[:n]))
-	lines := strings.Split(response, "\n")
-
-	// Find line with MD5 hash (32 hex chars)
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if len(line) == 32 && isHex(line) {
-			return line, nil
-		}
-	}
-
-	return "", fmt.Errorf("could not extract MD5")
-}
-
 // drainConnection drains any pending data from connection
 // This is CRITICAL before file transfer to remove leftover shell output
 func (t *Transferer) drainConnection() {
@@ -287,16 +324,6 @@ func isBase64Like(s string) bool {
 		}
 	}
 	return true
-}
-
-// showProgress displays upload progress bar
-func (t *Transferer) showProgress(current, total, fileSize int) {
-	percentage := float64(current) / float64(total) * 100
-	barWidth := 40
-	filled := int(percentage / 100 * float64(barWidth))
-
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-	fmt.Printf("\r [%s] %3.0f%% (%d/%d chunks)", bar, percentage, current, total)
 }
 
 // splitIntoChunks splits a string into chunks of specified size

