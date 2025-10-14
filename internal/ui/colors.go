@@ -37,6 +37,11 @@ const (
 	SymbolSkull       = ""    // Session died
 	SymbolCommand     = ""   // Commands/arrows
 	SymbolInfo        = ""   // Information
+	SymbolCheck       = ""   // Information
+	SymbolDownload    = ""   // Information
+	SymbolUpload      = ""   // Information
+	SymbolError       = ""   // Information
+	SymbolWarning     = ""   // Information
 )
 
 // Themed color functions inspired by ezpz scripts
@@ -49,15 +54,15 @@ func Info(text string) string {
 }
 
 func Success(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolInfo, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolCheck, text, ColorReset)
 }
 
 func Error(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorRed, SymbolInfo, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorRed, SymbolError, text, ColorReset)
 }
 
 func Warning(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolInfo, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolWarning, text, ColorReset)
 }
 
 func Command(text string) string {
@@ -198,4 +203,17 @@ func UsingSession(id int, addr string) string {
 func ReturningToMenu() string {
 	return fmt.Sprintf("\r\n%s%s Exiting interactive shell%s\r\n",
 		ColorCyan, SymbolInfo, ColorReset)
+}
+
+// File transfer operations
+func Downloading(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolDownload, text, ColorReset)
+}
+
+func Uploading(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolUpload, text, ColorReset)
+}
+
+func TransferComplete(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolCheck, text, ColorReset)
 }

@@ -19,6 +19,7 @@ type Listener struct {
 	listener       net.Listener
 	sessionManager *session.Manager // Gerenciador de múltiplas sessões
 	mu             sync.RWMutex     // Protects concurrent access to listener state
+	shutdown       bool             // Flag to indicate graceful shutdown
 }
 
 // New creates a new Listener instance
@@ -59,10 +60,19 @@ func (l *Listener) acceptConnections() {
 		// Accept blocks until a new connection arrives
 		conn, err := l.listener.Accept()
 		if err != nil {
+			// Check if we're shutting down - if so, exit silently
+			l.mu.RLock()
+			isShutdown := l.shutdown
+			l.mu.RUnlock()
+
+			if isShutdown {
+				return
+			}
+
 			log.Printf("Error accepting connection: %v", err)
 			continue
 		}
-		
+
 		// Handle each connection in its own goroutine
 		// This allows multiple simultaneous connections
 		go l.handleConnection(conn)
@@ -98,12 +108,15 @@ func (l *Listener) GetSessionManager() *session.Manager {
 
 // Stop gracefully shuts down the listener
 func (l *Listener) Stop() error {
-	log.Println("Shutting down listener...")
-	
+	// Set shutdown flag before closing to prevent error logging
+	l.mu.Lock()
+	l.shutdown = true
+	l.mu.Unlock()
+
 	if l.listener != nil {
 		return l.listener.Close()
 	}
-	
+
 	return nil
 }
 

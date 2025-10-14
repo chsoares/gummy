@@ -361,3 +361,54 @@ func (h *Handler) setupSignalHandler() {
 		os.Exit(0)
 	}()
 }
+
+// ExecuteCommand executes a command on the remote shell and returns output
+// This is used for file transfer and other background operations
+// It doesn't interfere with interactive shell mode
+func (h *Handler) ExecuteCommand(cmd string) (string, error) {
+	// Send command
+	_, err := h.conn.Write([]byte(cmd + "\n"))
+	if err != nil {
+		return "", fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Wait for command to execute
+	time.Sleep(200 * time.Millisecond)
+
+	// Read output with timeout
+	var output strings.Builder
+	buffer := make([]byte, 8192)
+	h.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	for {
+		n, err := h.conn.Read(buffer)
+		if err != nil {
+			break // Timeout or EOF
+		}
+
+		if n > 0 {
+			output.Write(buffer[:n])
+		}
+
+		// If we got less than buffer size, might be done
+		if n < len(buffer) {
+			time.Sleep(100 * time.Millisecond)
+			// Try one more small read
+			h.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			n, err := h.conn.Read(buffer)
+			if err == nil && n > 0 {
+				output.Write(buffer[:n])
+			}
+			break
+		}
+	}
+
+	h.conn.SetReadDeadline(time.Time{})
+	return output.String(), nil
+}
+
+// GetConnection returns the underlying connection
+// Used for direct file transfer operations
+func (h *Handler) GetConnection() net.Conn {
+	return h.conn
+}

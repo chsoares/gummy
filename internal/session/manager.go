@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/shell"
+	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
 	"golang.org/x/term"
 )
@@ -470,6 +471,22 @@ func (m *Manager) handleCommand(command string) {
 		os.Exit(0)
 	case "clear", "cls":
 		fmt.Print("\033[2J\033[H")
+	case "upload":
+		if len(parts) < 3 {
+			fmt.Println(ui.Error("Usage: upload <local_path> <remote_path>"))
+			return
+		}
+		m.handleUpload(parts[1], parts[2])
+	case "download":
+		if len(parts) < 2 {
+			fmt.Println(ui.Error("Usage: download <remote_path> [local_path]"))
+			return
+		}
+		localPath := ""
+		if len(parts) >= 3 {
+			localPath = parts[2]
+		}
+		m.handleDownload(parts[1], localPath)
 	default:
 		fmt.Println(ui.Warning(fmt.Sprintf("Unknown command: %s (type 'help' for available commands)", parts[0])))
 	}
@@ -484,13 +501,17 @@ func (m *Manager) showMenu() {
 func (m *Manager) showHelp() {
 	fmt.Println()
 	fmt.Println(ui.CommandHelp("Available Commands"))
-	fmt.Println(ui.Command("sessions, list, ls    - List active sessions"))
-	fmt.Println(ui.Command("use <id>             - Select session with given ID"))
-	fmt.Println(ui.Command("shell                - Enter interactive shell (requires selected session)"))
-	fmt.Println(ui.Command("kill <id>            - Kill session with given ID"))
-	fmt.Println(ui.Command("help, h              - Show this help"))
-	fmt.Println(ui.Command("clear, cls           - Clear screen"))
-	fmt.Println(ui.Command("exit, quit, q        - Exit Gummy"))
+	fmt.Println(ui.Command("sessions, list, ls              - List active sessions"))
+	fmt.Println(ui.Command("use <id>                       - Select session with given ID"))
+	fmt.Println(ui.Command("shell                          - Enter interactive shell (requires selected session)"))
+	fmt.Println(ui.Command("upload <local> <remote>        - Upload file to remote system"))
+	fmt.Println(ui.Command("download <remote> [local]      - Download file from remote system"))
+	fmt.Println(ui.Command("kill <id>                      - Kill session with given ID"))
+	fmt.Println(ui.Command("help, h                        - Show this help"))
+	fmt.Println(ui.Command("clear, cls                     - Clear screen"))
+	fmt.Println(ui.Command("exit, quit, q                  - Exit Gummy"))
+	fmt.Println()
+	fmt.Println(ui.HelpInfo("Note: File transfer works best BEFORE entering shell mode"))
 	fmt.Println()
 }
 
@@ -512,4 +533,54 @@ func (m *Manager) flushStdin() {
 
 	// Flush usando syscall
 	syscall.Syscall(syscall.SYS_IOCTL, uintptr(os.Stdin.Fd()), uintptr(0x540B), 0) // TCFLSH
+}
+
+// handleUpload handles file upload command
+func (m *Manager) handleUpload(localPath, remotePath string) {
+	// Check if there's a selected session
+	if m.selectedSession == nil {
+		fmt.Println(ui.Error("No session selected. Use 'use <id>' first."))
+		return
+	}
+
+	// Check if local file exists
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		fmt.Println(ui.Error(fmt.Sprintf("Local file not found: %s", localPath)))
+		return
+	}
+
+	// Create transferer
+	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
+
+	// Perform upload
+	err := t.Upload(localPath, remotePath)
+	if err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Upload failed: %v", err)))
+		return
+	}
+
+	// Drain any output from transfer commands
+	t.DrainOutput()
+}
+
+// handleDownload handles file download command
+func (m *Manager) handleDownload(remotePath, localPath string) {
+	// Check if there's a selected session
+	if m.selectedSession == nil {
+		fmt.Println(ui.Error("No session selected. Use 'use <id>' first."))
+		return
+	}
+
+	// Create transferer
+	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
+
+	// Perform download
+	err := t.Download(remotePath, localPath)
+	if err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Download failed: %v", err)))
+		return
+	}
+
+	// Drain any output from transfer commands
+	t.DrainOutput()
 }

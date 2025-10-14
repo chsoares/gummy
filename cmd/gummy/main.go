@@ -50,7 +50,7 @@ func main() {
 	// Start session manager menu - this will block
 	go func() {
 		<-sigChan
-		fmt.Println(ui.Warning("Shutting down gracefully..."))
+		fmt.Println() // Nova linha antes do goodbye
 		if err := l.Stop(); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Error stopping listener: %v", err)))
 		}
