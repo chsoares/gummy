@@ -6,10 +6,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chsoares/gummy/internal/pty"
+	"github.com/chsoares/gummy/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -53,6 +55,11 @@ func (h *Handler) Start() error {
 	// Configura handler para Ctrl+C para restaurar terminal
 	h.setupSignalHandler()
 
+	// Testa se a conexão está realmente viva
+	if !h.isConnectionAlive() {
+		return fmt.Errorf("connection is dead")
+	}
+
 	// Configura timeout para detectar shells inativas
 	h.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
@@ -75,6 +82,9 @@ func (h *Handler) Start() error {
 
 	// Tenta upgrade PTY antes de iniciar I/O relay
 	h.attemptPTYUpgrade()
+
+	// Drain adicional para garantir shell limpa
+	h.drainBeforeInteractive()
 
 	// Inicia goroutines para relay bidirecional de I/O
 	errorChan := make(chan error, 2)
@@ -112,7 +122,7 @@ func (h *Handler) relayLocalToRemote(errorChan chan error) {
 
 		// Intercepta F12 (\x1b[24~) para voltar ao menu
 		if h.containsF12(data) {
-			fmt.Printf("\r\n[Gummy] Returning to menu...\r\n")
+			fmt.Print(ui.ReturningToMenu())
 			errorChan <- io.EOF
 			return
 		}
@@ -220,6 +230,77 @@ func (h *Handler) drainSetupOutput() {
 	}
 
 	h.conn.SetReadDeadline(time.Time{})
+}
+
+// drainBeforeInteractive drena qualquer comando residual antes da shell interativa
+func (h *Handler) drainBeforeInteractive() {
+	// Pausa para dar tempo para detecção de whoami terminar
+	time.Sleep(1 * time.Second)
+
+	// Envia enter para gerar novo prompt limpo
+	h.conn.Write([]byte("\n"))
+
+	// Aguarda o novo prompt aparecer
+	time.Sleep(300 * time.Millisecond)
+
+	// Drena apenas comandos antigos, preservando o prompt atual
+	buffer := make([]byte, 1024)
+	promptBuffer := ""
+
+	h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+	for {
+		n, err := h.conn.Read(buffer)
+		if err != nil || n == 0 {
+			break
+		}
+
+		data := string(buffer[:n])
+		promptBuffer += data
+
+		// Se parece com um prompt no final, para de drenar
+		lines := strings.Split(promptBuffer, "\n")
+		if len(lines) > 0 {
+			lastLine := strings.TrimSpace(lines[len(lines)-1])
+			// Se termina com $ ou # ou >, provavelmente é um prompt
+			if strings.HasSuffix(lastLine, "$") || strings.HasSuffix(lastLine, "#") || strings.HasSuffix(lastLine, ">") {
+				// Mostra o prompt atual
+				os.Stdout.Write([]byte(lastLine))
+				break
+			}
+		}
+	}
+
+	h.conn.SetReadDeadline(time.Time{})
+}
+
+// isConnectionAlive testa se a conexão está realmente viva
+func (h *Handler) isConnectionAlive() bool {
+	// Tenta escrever um byte nulo (não visível) para testar a conexão
+	h.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_, err := h.conn.Write([]byte{})
+	h.conn.SetWriteDeadline(time.Time{})
+
+	if err != nil {
+		return false
+	}
+
+	// Testa leitura com timeout muito curto
+	h.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buffer := make([]byte, 1)
+	_, err = h.conn.Read(buffer)
+	h.conn.SetReadDeadline(time.Time{})
+
+	// Se deu timeout, conexão está viva mas sem dados (normal)
+	// Se deu EOF ou outro erro de conexão, está morta
+	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return true // Timeout é normal, conexão viva
+		}
+		return false // EOF ou erro real
+	}
+
+	return true
 }
 
 // GetSessionID retorna o ID da sessão

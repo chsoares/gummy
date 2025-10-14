@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/chsoares/gummy/internal/listener"
+	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Config holds the application configuration
@@ -26,14 +27,21 @@ func main() {
 	// Setup logging - minimal output like Penelope
 	log.SetFlags(0)
 
+	// Show banner
+	fmt.Println(ui.Banner())
+	fmt.Println()
+
 	// Initialize listener
 	l := listener.New(config.Host, config.Port)
 
 	// Start listening for connections
 	if err := l.Start(); err != nil {
-		fmt.Printf("Error: Failed to start listener: %v\n", err)
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to start listener: %v", err)))
 		os.Exit(1)
 	}
+
+	fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
+	fmt.Println()
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -42,10 +50,11 @@ func main() {
 	// Start session manager menu - this will block
 	go func() {
 		<-sigChan
-		fmt.Println("\nShutting down gracefully...")
+		fmt.Println(ui.Warning("Shutting down gracefully..."))
 		if err := l.Stop(); err != nil {
-			log.Printf("Error stopping listener: %v", err)
+			fmt.Println(ui.Error(fmt.Sprintf("Error stopping listener: %v", err)))
 		}
+		fmt.Println(ui.Success("Goodbye!"))
 		os.Exit(0)
 	}()
 

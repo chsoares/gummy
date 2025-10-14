@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/chsoares/gummy/internal/session"
+	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Listener handles incoming TCP connections
@@ -43,7 +44,7 @@ func (l *Listener) Start() error {
 	}
 	
 	l.listener = listener
-	fmt.Printf("Listening for connections on %s\n", addr)
+	fmt.Println(ui.Info(fmt.Sprintf("Listening for connections on %s", addr)))
 
 	// Start accepting connections in a goroutine
 	// This is non-blocking, allowing main to continue
