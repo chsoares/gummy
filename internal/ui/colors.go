@@ -213,7 +213,3 @@ func Downloading(text string) string {
 func Uploading(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolUpload, text, ColorReset)
 }
-
-func TransferComplete(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolCheck, text, ColorReset)
-}

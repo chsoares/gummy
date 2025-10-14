@@ -102,9 +102,9 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 	// Verify checksum (optional - best effort)
 	remoteChecksum, err := t.getRemoteMD5(remotePath)
 	if err == nil && remoteChecksum == checksum {
-		fmt.Println(ui.TransferComplete(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
+		fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
 	} else {
-		fmt.Println(ui.TransferComplete("Upload complete!"))
+		fmt.Println(ui.Success("Upload complete!"))
 	}
 
 	return nil
@@ -210,7 +210,7 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 	hash := md5.Sum(decoded)
 	checksum := hex.EncodeToString(hash[:])
 
-	fmt.Println(ui.TransferComplete(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
+	fmt.Println(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
 		localPath, formatSize(len(decoded)), checksum[:8])))
 
 	t.drainConnection()
