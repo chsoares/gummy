@@ -16,11 +16,12 @@ import (
 type Listener struct {
 	host           string
 	port           int
+	listenerIP     string           // IP for payload generation
 	listener       net.Listener
 	sessionManager *session.Manager // Gerenciador de múltiplas sessões
 	mu             sync.RWMutex     // Protects concurrent access to listener state
 	shutdown       bool             // Flag to indicate graceful shutdown
-	silent         bool             // Suppress console output (for TUI mode)
+	silent         bool             // Suppress console output (reserved for future use)
 }
 
 // New creates a new Listener instance
@@ -39,20 +40,38 @@ func (l *Listener) SetSilent(silent bool) {
 	l.silent = silent
 }
 
+// SetListenerIP sets the IP address for payload generation
+func (l *Listener) SetListenerIP(ip string) {
+	l.listenerIP = ip
+	l.sessionManager.SetListenerIP(ip)
+	l.sessionManager.SetListenerPort(l.port)
+}
+
+// GetListenerPort returns the listening port
+func (l *Listener) GetListenerPort() int {
+	return l.port
+}
+
 // Start begins listening for connections
 // Returns an error if it fails to start
 func (l *Listener) Start() error {
 	addr := fmt.Sprintf("%s:%d", l.host, l.port)
-	
+
 	// net.Listen creates a TCP listener
 	// "tcp" is the network type, addr is host:port
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to start listener: %w", err)
 	}
-	
+
 	l.listener = listener
-	fmt.Println(ui.Info(fmt.Sprintf("Listening for connections on %s", addr)))
+
+	// Show the actual IP for payload generation, not the bind address
+	displayAddr := addr
+	if l.listenerIP != "" {
+		displayAddr = fmt.Sprintf("%s:%d", l.listenerIP, l.port)
+	}
+	fmt.Println(ui.Info(fmt.Sprintf("Listening for connections on %s", displayAddr)))
 
 	// Start accepting connections in a goroutine
 	// This is non-blocking, allowing main to continue

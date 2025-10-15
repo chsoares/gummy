@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chsoares/gummy/internal/payloads"
 	"github.com/chsoares/gummy/internal/shell"
 	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
@@ -30,7 +31,9 @@ type Manager struct {
 	activeConn      net.Conn                // Conexão atualmente ativa (se houver)
 	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
 	menuActive      bool                    // Se estamos no menu principal
-	silent          bool                    // Suppress console output (for TUI mode)
+	silent          bool                    // Suppress console output (reserved for future use)
+	listenerIP      string                  // IP do listener para geração de payloads
+	listenerPort    int                     // Porta do listener para geração de payloads
 }
 
 // SessionInfo contém informações sobre uma sessão
@@ -268,6 +271,16 @@ func (m *Manager) SetSilent(silent bool) {
 	m.silent = silent
 }
 
+// SetListenerIP sets the listener IP and port for payload generation
+func (m *Manager) SetListenerIP(ip string) {
+	m.listenerIP = ip
+}
+
+// SetListenerPort sets the listener port for payload generation
+func (m *Manager) SetListenerPort(port int) {
+	m.listenerPort = port
+}
+
 // AddSession adiciona uma nova sessão ao gerenciador
 func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.mu.Lock()
@@ -299,7 +312,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
 
-	// Only print if not in silent mode (TUI)
+	// Only print if not in silent mode
 	if !m.silent {
 		if m.menuActive {
 			// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
@@ -354,8 +367,7 @@ func (m *Manager) ListSessions() {
 
 	// Collect all session lines
 	var lines []string
-	lines = append(lines, fmt.Sprintf("%sID   Remote Address    Whoami%s", ui.ColorBrightBlack, ui.ColorReset))
-	lines = append(lines, fmt.Sprintf("%s--   --------------    ------%s", ui.ColorBrightBlack, ui.ColorReset))
+	lines = append(lines, ui.TableHeader("id  remote address     whoami"))
 
 	// Ordenar por NumID para exibição consistente
 	var sessions []*SessionInfo
@@ -367,7 +379,7 @@ func (m *Manager) ListSessions() {
 	})
 
 	for _, session := range sessions {
-		sessionLine := fmt.Sprintf("%-3d %-16s %s", session.NumID, session.RemoteIP, session.Whoami)
+		sessionLine := fmt.Sprintf("%-3d %-18s %s", session.NumID, session.RemoteIP, session.Whoami)
 		if session.Active {
 			lines = append(lines, ui.SessionActive(sessionLine))
 		} else {
@@ -376,9 +388,7 @@ func (m *Manager) ListSessions() {
 	}
 
 	// Render everything inside a box
-	fmt.Println()
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Active Sessions", ui.SymbolGem), lines))
-	fmt.Println()
 }
 
 // UseSession seleciona uma sessão específica (não entra na shell)
@@ -411,6 +421,13 @@ func (m *Manager) UseSession(numID int) error {
 		return fmt.Errorf("session %d is no longer alive", numID)
 	}
 
+	// Desativa todas as sessões
+	for _, session := range m.sessions {
+		session.Active = false
+	}
+
+	// Marca a sessão selecionada como ativa
+	targetSession.Active = true
 	m.selectedSession = targetSession
 	fmt.Println(ui.UsingSession(targetSession.NumID, targetSession.RemoteIP))
 
@@ -711,6 +728,24 @@ func (m *Manager) handleCommand(command string) {
 	switch parts[0] {
 	case "help", "h":
 		m.showHelp()
+	case "rev":
+		// Optional: rev [ip] [port]
+		ip := m.listenerIP
+		port := m.listenerPort
+
+		if len(parts) >= 2 {
+			ip = parts[1]
+		}
+		if len(parts) >= 3 {
+			customPort, err := strconv.Atoi(parts[2])
+			if err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", parts[2])))
+				return
+			}
+			port = customPort
+		}
+
+		m.handleRev(ip, port)
 	case "sessions", "list", "ls":
 		m.ListSessions()
 	case "use":
@@ -751,8 +786,8 @@ func (m *Manager) handleCommand(command string) {
 
 		if hasActiveSessions {
 			// Prompt for confirmation
-			if !ui.Confirm("Active sessions detected. Are you sure you want to exit?") {
-				fmt.Println(ui.Info("Exit cancelled"))
+			if !ui.Confirm("Active sessions detected. Exit anyway?") {
+				// fmt.Println(ui.Info("Exit cancelled"))
 				return
 			}
 		}
@@ -793,22 +828,40 @@ func (m *Manager) showMenu() {
 
 // showHelp mostra ajuda dos comandos
 func (m *Manager) showHelp() {
-	// Collect all help lines
+	// Collect all help lines with categories
 	var lines []string
-	lines = append(lines, ui.Command("sessions, list, ls             - List active sessions"))
-	lines = append(lines, ui.Command("use <id>                       - Select session with given ID"))
-	lines = append(lines, ui.Command("shell                          - Enter interactive shell"))
-	lines = append(lines, ui.Command("upload <local> [remote]        - Upload file to remote system"))
-	lines = append(lines, ui.Command("download <remote> [local]      - Download file from remote system"))
-	lines = append(lines, ui.Command("kill <id>                      - Kill session with given ID"))
-	lines = append(lines, ui.Command("help, h                        - Show this help"))
-	lines = append(lines, ui.Command("clear, cls                     - Clear screen"))
-	lines = append(lines, ui.Command("exit, quit, q                  - Exit Gummy"))
+
+	// Connect category
+	lines = append(lines, ui.CommandHelp("connect"))
+	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
+	lines = append(lines, ui.Command("ssh                          - Generate SSH connection //TODO"))
+	lines = append(lines, ui.Command("winrm                        - Generate WinRM connection //TODO"))
+	lines = append(lines, "")
+
+	// Handler category
+	lines = append(lines, ui.CommandHelp("handler"))
+	lines = append(lines, ui.Command("sessions, list               - List active sessions"))
+	lines = append(lines, ui.Command("use <id>                     - Select session with given ID"))
+	lines = append(lines, ui.Command("kill <id>                    - Kill session with given ID"))
+	lines = append(lines, "")
+
+	// Session category
+	lines = append(lines, ui.CommandHelp("session"))
+	lines = append(lines, ui.Command("shell                        - Enter interactive shell"))
+	lines = append(lines, ui.Command("upload <local> [remote]      - Upload file to remote system"))
+	lines = append(lines, ui.Command("download <remote> [local]    - Download file from remote system"))
+	lines = append(lines, ui.Command("run <module>                 - Run a module //TODO"))
+	lines = append(lines, ui.Command("spawn                        - Spawn new session //TODO"))
+	lines = append(lines, "")
+
+	// Program category
+	lines = append(lines, ui.CommandHelp("program"))
+	lines = append(lines, ui.Command("help                         - Show this help"))
+	lines = append(lines, ui.Command("clear                        - Clear screen"))
+	lines = append(lines, ui.Command("exit, quit                   - Exit Gummy"))
 
 	// Render everything inside a box
-	fmt.Println()
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolCommand), lines))
-	fmt.Println()
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolGem), lines))
 }
 
 // GetSessionCount retorna o número de sessões ativas
@@ -924,4 +977,28 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 
 	// Drain any output from transfer commands
 	t.DrainOutput()
+}
+
+// handleRev generates and displays reverse shell payloads
+func (m *Manager) handleRev(ip string, port int) {
+	// Validate that we have IP and port
+	if ip == "" {
+		fmt.Println(ui.Error("No IP address available. Please specify IP with: rev <ip> <port>"))
+		return
+	}
+	if port == 0 {
+		fmt.Println(ui.Error("No port available. Please specify port with: rev <ip> <port>"))
+		return
+	}
+
+	// Create payload generator
+	gen := payloads.NewReverseShellGenerator(ip, port)
+
+	// Bash payloads
+	fmt.Println(ui.CommandHelp("Bash"))
+	fmt.Println(gen.GenerateBash())
+	fmt.Println(gen.GenerateBashBase64())
+	// PowerShell payload
+	fmt.Println(ui.CommandHelp("PowerShell"))
+	fmt.Println(gen.GeneratePowerShell())
 }

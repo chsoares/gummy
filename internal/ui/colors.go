@@ -94,13 +94,18 @@ func HelpInfo(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorBlue, SymbolCommand, text, ColorReset)
 }
 
+// TableHeader for table column headers (no symbol, just colored text)
+func TableHeader(text string) string {
+	return fmt.Sprintf("%s%s%s", ColorBlue, text, ColorReset)
+}
+
 // Session status indicators
 func SessionActive(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorGreen, SymbolTarget, text, ColorReset)
+	return fmt.Sprintf("%s%s%s", ColorYellow, text, ColorReset)
 }
 
 func SessionInactive(text string) string {
-	return fmt.Sprintf("%s %s%s", ColorReset, text, ColorReset)
+	return fmt.Sprintf("%s%s", text, ColorReset)
 }
 
 // Banner function inspired by gum style
@@ -367,13 +372,13 @@ func Confirm(message string) bool {
 			Foreground(lipgloss.Color("255")).
 			Background(lipgloss.Color("5")).
 			Bold(true).
-			Width(8).      // Fixed width
+			Width(12).     // Width of 12 for better centering (divisible by both 2 and 3)
 			Align(lipgloss.Center). // Center text in button
 			MarginRight(2), // Space between buttons
 		unselectedStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
 			Background(lipgloss.Color("235")). // Light gray background
-			Width(8).      // Fixed width
+			Width(12).     // Width of 12 for better centering (divisible by both 2 and 3)
 			Align(lipgloss.Center). // Center text in button
 			MarginRight(2), // Space between buttons
 	}

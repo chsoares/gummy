@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-Gummy is a modern shell handler written in Go, designed for CTF competitions. It's a port/reimplementation of [Penelope](https://github.com/brightio/penelope) with enhanced features and a beautiful TUI interface using Bubble Tea.
+Gummy is a modern shell handler written in Go, designed for CTF competitions. It's a port/reimplementation of [Penelope](https://github.com/brightio/penelope) with enhanced features and a beautiful CLI interface using Bubble Tea components.
 
 **Primary Goals:**
 - Learn Go by building a practical tool
 - Create a robust reverse/bind shell handler for CTFs
 - Implement advanced features (PTY upgrade, file transfers, port forwarding)
-- Build a polished TUI with Bubble Tea
+- Build a polished CLI with Bubble Tea components (Lipgloss styling, interactive confirmations)
 
 ## Current Status
 
@@ -41,8 +41,10 @@ Gummy is a modern shell handler written in Go, designed for CTF competitions. It
   - Upload/download progress with animated spinners
   - Dynamic message updates (size, percentage)
   - ESC to cancel transfers
-- [x] **Lipgloss Banner** (`github.com/charmbracelet/lipgloss`) 🆕
-  - Styled banner with automatic sizing
+- [x] **Bubble Tea Components** (`github.com/charmbracelet/lipgloss` & `bubbletea`) 🆕
+  - Styled banner with Lipgloss
+  - Interactive confirmations with Bubble Tea
+  - Boxed menus and help screens
   - Clean, professional appearance
 - [x] Concurrent connection handling (multiple simultaneous sessions)
 - [x] Graceful shutdown with signal handling (clean exit on Ctrl+C)
@@ -74,11 +76,12 @@ gummy/
 │   ├── shell/
 │   │   └── handler.go           # ✅ Shell I/O, bidirectional communication
 │   ├── ui/
-│   │   └── colors.go            # ✅ Color/formatting utilities
+│   │   ├── colors.go            # ✅ Color/formatting utilities with Lipgloss
+│   │   └── spinner.go           # ✅ Progress spinners for transfers
 │   ├── pty/
-│   │   └── upgrade.go           # 🚧 PTY upgrade (in progress)
+│   │   └── upgrade.go           # ✅ PTY upgrade (complete)
 │   └── transfer/
-│       └── transfer.go          # 📋 File transfer (TODO)
+│       └── transfer.go          # ✅ File transfer (complete)
 ├── go.mod
 ├── go.sum
 ├── CLAUDE.md                    # This file
@@ -149,8 +152,11 @@ Will be used for:
 
 **Dependencies:**
 - Go 1.21+ (check with `go version`)
-- No external dependencies yet
-- Future: Bubble Tea for TUI
+- `github.com/chzyer/readline` - Enhanced CLI input
+- `github.com/charmbracelet/lipgloss` - Terminal styling
+- `github.com/charmbracelet/bubbletea` - Interactive components (confirmations)
+- `github.com/creack/pty` - PTY handling
+- `golang.org/x/term` - Terminal utilities
 
 **Build & Run:**
 ```fish
@@ -231,25 +237,23 @@ func (p *PTYUpgrader) SetupResizeHandler() {
 
 **Priority:** Medium (nice-to-have, current fixed size works fine for most use cases)
 
-### 2. File Transfer (MEDIUM PRIORITY)
-**File:** `internal/transfer/transfer.go`
+### 2. Port Forwarding (HIGH PRIORITY)
+**Files:** `internal/portfwd/` (new package)
 
 **Tasks:**
-- Base64 encoding/decoding
-- Upload files to target
-- Download files from target
-- Progress indication
+- Local port forwarding (listen locally, forward through victim)
+- Remote port forwarding (listen on victim, forward to local)
+- Multiple concurrent forwards
+- Dynamic port allocation
 
-### 3. TUI with Bubble Tea (OPTIONAL - Future Enhancement)
-**Current State:** We have a functional CLI menu system that works well
+### 3. Session Logging (MEDIUM PRIORITY)
+**File:** `internal/session/logger.go` (new file)
 
-**If implementing TUI:**
-- Full-screen Bubble Tea interface
-- Split panes (session list + active shell)
-- Visual session indicators
-- Mouse support
-
-**Note:** The current menu system is sufficient for CTF use. TUI would be a polish feature, not a necessity.
+**Tasks:**
+- Automatic logging of all session I/O
+- Timestamped log files per session
+- Configurable log directory
+- Replay capability
 
 ## Code Style Guidelines
 
@@ -355,9 +359,10 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 - Effective Go: https://go.dev/doc/effective_go
 - Standard library: https://pkg.go.dev/std
 
-### Bubble Tea (TUI)
+### Bubble Tea Components
 - https://github.com/charmbracelet/bubbletea
-- Examples: https://github.com/charmbracelet/bubbletea/tree/master/examples
+- https://github.com/charmbracelet/lipgloss
+- https://github.com/charmbracelet/bubbles
 
 ### PTY Handling
 - https://github.com/creack/pty
@@ -439,6 +444,8 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 
 11. **External Libraries** 🆕
     - `github.com/chzyer/readline` for rich terminal input
+    - `github.com/charmbracelet/lipgloss` for styling and layout
+    - `github.com/charmbracelet/bubbletea` for interactive components
     - History persistence and management
     - Keybindings and cursor control
     - Graceful fallback when unavailable
@@ -452,8 +459,8 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 
 ## Progress Tracking
 
-**Last updated:** 2025-10-14
-**Current focus:** Readline integration complete!
-**Next milestone:** Port forwarding or additional polish features
-**Lines of code:** ~1,700 LOC across 6 modules + readline dependency
-**Status:** Core + File Transfer + Readline COMPLETE! ✅ Production-ready for CTF use!
+**Last updated:** 2025-10-15
+**Current focus:** CLI with Bubble Tea components complete!
+**Next milestone:** Port forwarding or SIGWINCH handler
+**Lines of code:** ~1,800 LOC across 7 modules
+**Status:** Core + File Transfer + Readline + Bubble Tea Styling COMPLETE! ✅ Production-ready for CTF use!
