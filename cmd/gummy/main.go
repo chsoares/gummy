@@ -9,18 +9,14 @@ import (
 	"syscall"
 
 	"github.com/chsoares/gummy/internal/listener"
-	"github.com/chsoares/gummy/internal/statusbar"
-	"github.com/chsoares/gummy/internal/tui"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Config holds the application configuration
 type Config struct {
-	Port       int
-	Host       string
-	LogLevel   string
-	UseTUI     bool
-	UseStatusBar bool
+	Port     int
+	Host     string
+	LogLevel string
 }
 
 func main() {
@@ -31,9 +27,10 @@ func main() {
 	// Setup logging - minimal output like Penelope
 	log.SetFlags(0)
 
-	// Show banner
+	// Print banner first
 	fmt.Println(ui.Banner())
-	//fmt.Println()
+	fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
+	fmt.Println()
 
 	// Initialize listener
 	l := listener.New(config.Host, config.Port)
@@ -44,14 +41,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup signal handling for graceful shutdown
+	// Setup signal handling - only for cleanup, not for exit
+	// Exit is only via exit/quit/q commands
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGTERM) // Only SIGTERM, not SIGINT (Ctrl+C)
 
-	// Start session manager menu - this will block
 	go func() {
 		<-sigChan
-		fmt.Println() // Nova linha antes do goodbye
+		fmt.Println()
 		if err := l.Stop(); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Error stopping listener: %v", err)))
 		}
@@ -59,28 +56,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Choose UI mode
-	if config.UseTUI {
-		// TUI mode (experimental) - enable silent mode
-		l.GetSessionManager().SetSilent(true)
-		if err := tui.Start(l.GetSessionManager()); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("TUI error: %v", err)))
-			os.Exit(1)
-		}
-	} else {
-		// CLI mode with optional status bar
-		var bar *statusbar.StatusBar
-		if config.UseStatusBar {
-			bar = statusbar.New(l.GetSessionManager())
-			bar.Start()
-			defer bar.Stop()
-		} else {
-			fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
-			fmt.Println()
-		}
-
-		l.GetSessionManager().StartMenu()
-	}
+	l.GetSessionManager().StartMenu()
 }
 
 // parseFlags parses command-line arguments
@@ -97,9 +73,6 @@ func parseFlags() *Config {
 	flag.StringVar(&config.Host, "h", "0.0.0.0", "Host to bind to (shorthand)")
 
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-
-	flag.BoolVar(&config.UseTUI, "tui", false, "Use TUI mode (experimental)")
-	flag.BoolVar(&config.UseStatusBar, "statusbar", false, "Show status bar (experimental, has issues)")
 
 	// Custom usage message
 	flag.Usage = func() {

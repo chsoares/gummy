@@ -10,24 +10,29 @@ import (
 	"golang.org/x/term"
 )
 
-// StatusBar renders a persistent status bar at the top of the terminal
+// StatusBar renders a persistent status bar at the bottom of the terminal
 type StatusBar struct {
 	manager *session.Manager
 	width   int
+	height  int
 	running bool
 	stopCh  chan struct{}
 }
 
 // New creates a new status bar
 func New(manager *session.Manager) *StatusBar {
-	width, _, _ := term.GetSize(0)
+	width, height, _ := term.GetSize(0)
 	if width == 0 {
 		width = 80 // Fallback
+	}
+	if height == 0 {
+		height = 24 // Fallback
 	}
 
 	return &StatusBar{
 		manager: manager,
 		width:   width,
+		height:  height,
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -35,6 +40,9 @@ func New(manager *session.Manager) *StatusBar {
 // Start begins rendering the status bar at the bottom
 func (sb *StatusBar) Start() {
 	sb.running = true
+
+	// Print a newline to ensure we have space at bottom
+	fmt.Println()
 
 	// Initial render
 	sb.render()
@@ -62,14 +70,11 @@ func (sb *StatusBar) Stop() {
 	sb.running = false
 	close(sb.stopCh)
 
-	// Clear the status bar at bottom
-	_, height, _ := term.GetSize(0)
-	if height > 0 {
-		fmt.Print("\033[s")                      // Save cursor
-		fmt.Printf("\033[%d;1H", height)         // Move to bottom line
-		fmt.Print("\033[2K")                     // Clear line
-		fmt.Print("\033[u")                      // Restore cursor
-	}
+	// Clear the status bar line
+	fmt.Print("\033[s")    // Save cursor
+	fmt.Print("\033[1A")   // Move up one line
+	fmt.Print("\r\033[K")  // Clear line
+	fmt.Print("\033[u")    // Restore cursor
 }
 
 // render draws the status bar
@@ -79,8 +84,8 @@ func (sb *StatusBar) render() {
 	if width > 0 {
 		sb.width = width
 	}
-	if height == 0 {
-		height = 24
+	if height > 0 {
+		sb.height = height
 	}
 
 	// Get session info
@@ -117,14 +122,13 @@ func (sb *StatusBar) render() {
 	statusLine := leftContent + spacing + rightContent
 	styledBar := barStyle.Render(statusLine)
 
-	// Render at bottom of screen
-	// Don't use save/restore cursor as it doesn't work well with readline
-	// Instead, use alternate save/restore and move cursor back to where readline expects it
-
-	fmt.Print("\0337")                       // Save cursor (DEC method)
-	fmt.Printf("\033[%d;1H", height)         // Move to last line
-	fmt.Print(styledBar)                     // Draw the bar
-	fmt.Print("\0338")                       // Restore cursor (DEC method)
+	// Render on the line above the prompt
+	// Use ANSI codes to save position, move up one line, render, and restore
+	fmt.Print("\033[s")          // Save cursor position
+	fmt.Print("\033[1A")         // Move up one line
+	fmt.Print("\r")              // Go to start of line
+	fmt.Print(styledBar)         // Draw the bar
+	fmt.Print("\033[u")          // Restore cursor position
 }
 
 // Update forces an immediate update of the status bar

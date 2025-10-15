@@ -3,6 +3,9 @@ package ui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -123,18 +126,53 @@ func Banner() string {
 func SubBanner(subtitle string) string {
 	// Define styles with Lipgloss
 	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("magenta")).
+		Foreground(lipgloss.Color("5")).
 		Padding(0, 1)
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("cyan")).
+		BorderForeground(lipgloss.Color("6")).
 		Padding(0, 1)
 
 	droplet := SymbolDroplet
 	title := fmt.Sprintf("%s %s", droplet, subtitle)
 
 	return boxStyle.Render(titleStyle.Render(title))
+}
+
+// SectionHeader creates a bordered header for sections (list, help, etc)
+func SectionHeader(title string) string {
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("6")). // Cyan
+		Bold(true).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("5")). // Magenta
+		Padding(0, 1)
+
+	return style.Render(title)
+}
+
+// BoxWithTitle creates a box with title and content lines (like dwrm help output)
+func BoxWithTitle(title string, lines []string) string {
+	// Title style
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("6")). // Cyan
+		Bold(true)
+
+	// Box style with border
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("5")). // Magenta border
+		Padding(0, 1)
+
+	// Join all content lines
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render(title),
+		"",
+		lipgloss.JoinVertical(lipgloss.Left, lines...),
+	)
+
+	return boxStyle.Render(content)
 }
 
 // Prompt with gummy theme
@@ -184,4 +222,167 @@ func Downloading(text string) string {
 
 func Uploading(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolUpload, text, ColorReset)
+}
+
+// confirmModel is the Bubble Tea model for confirmation (based on gum)
+type confirmModel struct {
+	prompt       string
+	affirmative  string
+	negative     string
+	quitting     bool
+	showHelp     bool
+	help         help.Model
+	keys         confirmKeymap
+	confirmation bool
+
+	// styles matching gum flags
+	promptStyle     lipgloss.Style
+	selectedStyle   lipgloss.Style
+	unselectedStyle lipgloss.Style
+}
+
+type confirmKeymap struct {
+	Abort       key.Binding
+	Quit        key.Binding
+	Negative    key.Binding
+	Affirmative key.Binding
+	Toggle      key.Binding
+	Submit      key.Binding
+}
+
+func (k confirmKeymap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Toggle, k.Submit, k.Affirmative, k.Negative}
+}
+
+func (k confirmKeymap) FullHelp() [][]key.Binding { return nil }
+
+func (m confirmModel) Init() tea.Cmd { return nil }
+
+func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keys.Abort):
+			m.confirmation = false
+			return m, tea.Interrupt
+		case key.Matches(msg, m.keys.Quit):
+			m.confirmation = false
+			m.quitting = true
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.Negative):
+			m.confirmation = false
+			m.quitting = true
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.Toggle):
+			m.confirmation = !m.confirmation
+		case key.Matches(msg, m.keys.Submit):
+			m.quitting = true
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.Affirmative):
+			m.quitting = true
+			m.confirmation = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m confirmModel) View() string {
+	if m.quitting {
+		return ""
+	}
+
+	var aff, neg string
+
+	if m.confirmation {
+		aff = m.selectedStyle.Render(m.affirmative)
+		neg = m.unselectedStyle.Render(m.negative)
+	} else {
+		aff = m.unselectedStyle.Render(m.affirmative)
+		neg = m.selectedStyle.Render(m.negative)
+	}
+
+	parts := []string{
+		m.promptStyle.Render(m.prompt),
+		"",
+		lipgloss.JoinHorizontal(lipgloss.Left, aff, neg),
+	}
+
+	if m.showHelp {
+		parts = append(parts, "", m.help.View(m.keys))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	// Wrap everything in a bordered box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("5")). // Magenta border
+		Padding(0, 1)
+
+	return boxStyle.Render(content)
+}
+
+// Confirm prompts user for yes/no confirmation (exact gum implementation)
+// Returns true if user confirms, false otherwise
+func Confirm(message string) bool {
+	// Match gum default keymap
+	keys := confirmKeymap{
+		Abort: key.NewBinding(
+			key.WithKeys("ctrl+c"),
+		),
+		Quit: key.NewBinding(
+			key.WithKeys("esc"),
+		),
+		Negative: key.NewBinding(
+			key.WithKeys("n", "N"),
+			key.WithHelp("n", "No"),
+		),
+		Affirmative: key.NewBinding(
+			key.WithKeys("y", "Y"),
+			key.WithHelp("y", "Yes"),
+		),
+		Toggle: key.NewBinding(
+			key.WithKeys("left", "h", "right", "l", "tab"),
+			key.WithHelp("←/→", "toggle"),
+		),
+		Submit: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "submit"),
+		),
+	}
+
+	// Match gum styles: --prompt.foreground 6 --selected.background 5 --selected.foreground 255 --unselected.background 235
+	m := confirmModel{
+		prompt:      message,
+		affirmative: "Yes",
+		negative:    "No",
+		confirmation: true, // Start with Yes selected
+		showHelp:    true,
+		help:        help.New(),
+		keys:        keys,
+		promptStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")), // Cyan
+		selectedStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255")).
+			Background(lipgloss.Color("5")).
+			Bold(true).
+			Width(8).      // Fixed width
+			Align(lipgloss.Center). // Center text in button
+			MarginRight(2), // Space between buttons
+		unselectedStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Background(lipgloss.Color("235")). // Light gray background
+			Width(8).      // Fixed width
+			Align(lipgloss.Center). // Center text in button
+			MarginRight(2), // Space between buttons
+	}
+
+	p := tea.NewProgram(m)
+	finalModel, err := p.Run()
+	if err != nil {
+		return false
+	}
+
+	return finalModel.(confirmModel).confirmation
 }

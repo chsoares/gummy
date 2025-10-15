@@ -36,29 +36,28 @@ Gummy is a modern shell handler written in Go, designed for CTF competitions. It
   - Up/Down for command history navigation
   - Persistent history in `~/.gummy/history` (1000 commands)
   - Standard keybinds (Ctrl+A/E, Ctrl+W, etc.)
+  - Tab completion for commands and file paths
+- [x] **Animated Spinners** (`internal/ui/spinner.go`) 🆕
+  - Upload/download progress with animated spinners
+  - Dynamic message updates (size, percentage)
+  - ESC to cancel transfers
+- [x] **Lipgloss Banner** (`github.com/charmbracelet/lipgloss`) 🆕
+  - Styled banner with automatic sizing
+  - Clean, professional appearance
 - [x] Concurrent connection handling (multiple simultaneous sessions)
 - [x] Graceful shutdown with signal handling (clean exit on Ctrl+C)
 - [x] Unique session ID generation (crypto/rand)
-- [x] Interactive menu system (list, use, shell, upload, download, kill, help, exit)
+- [x] Interactive menu system (list, use, shell, upload, download, kill, help, exit, clear)
 - [x] Color-coded UI output (`internal/ui/colors.go`)
 - [x] Session switching between multiple connections
 - [x] Clean connection cleanup on disconnect
+- [x] **Cancelable transfers** - Press ESC to cancel upload/download
 
 ### 📋 TODO (Phase 3 - Additional Features)
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
 - [ ] Port forwarding (local/remote)
 - [ ] Auto-reconnect capability
-- [ ] Tab completion in menu
 - [ ] Session logging to files
-
-### 🎨 TODO (Phase 3 - TUI)
-- [ ] Bubble Tea interface setup
-- [ ] Session list view
-- [ ] Interactive shell view
-- [ ] File transfer progress indicators
-- [ ] Logs panel
-- [ ] Status bar with connection info
-- [ ] Keyboard shortcuts
 
 ## Project Structure
 

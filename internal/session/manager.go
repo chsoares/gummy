@@ -352,10 +352,10 @@ func (m *Manager) ListSessions() {
 		return
 	}
 
-	fmt.Println()
-	fmt.Println(ui.Title("Active Sessions"))
-	fmt.Printf("%sID   Remote Address    Whoami%s\n", ui.ColorBrightBlack, ui.ColorReset)
-	fmt.Printf("%s--   --------------    ------%s\n", ui.ColorBrightBlack, ui.ColorReset)
+	// Collect all session lines
+	var lines []string
+	lines = append(lines, fmt.Sprintf("%sID   Remote Address    Whoami%s", ui.ColorBrightBlack, ui.ColorReset))
+	lines = append(lines, fmt.Sprintf("%s--   --------------    ------%s", ui.ColorBrightBlack, ui.ColorReset))
 
 	// Ordenar por NumID para exibição consistente
 	var sessions []*SessionInfo
@@ -369,11 +369,15 @@ func (m *Manager) ListSessions() {
 	for _, session := range sessions {
 		sessionLine := fmt.Sprintf("%-3d %-16s %s", session.NumID, session.RemoteIP, session.Whoami)
 		if session.Active {
-			fmt.Printf("%s\n", ui.SessionActive(sessionLine))
+			lines = append(lines, ui.SessionActive(sessionLine))
 		} else {
-			fmt.Printf("%s\n", ui.SessionInactive(sessionLine))
+			lines = append(lines, ui.SessionInactive(sessionLine))
 		}
 	}
+
+	// Render everything inside a box
+	fmt.Println()
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Active Sessions", ui.SymbolGem), lines))
 	fmt.Println()
 }
 
@@ -655,17 +659,11 @@ func (m *Manager) StartMenu() {
 			line, err := rl.Readline()
 			if err != nil {
 				if err == readline.ErrInterrupt {
-					// Ctrl+C on empty line exits
-					if len(line) == 0 {
-						fmt.Println() // Newline after ^C
-						fmt.Println(ui.Success("Goodbye!"))
-						os.Exit(0)
-					} else {
-						continue
-					}
+					// Ctrl+C is disabled - use 'exit', 'quit', or 'q' to exit
+					continue
 				} else if err == io.EOF {
 					// Ignore EOF completely (Ctrl+D, Delete key, etc)
-					// Only exit via Ctrl+C or "exit" command
+					// Only exit via "exit", "quit", or "q" commands
 					continue
 				}
 				break
@@ -746,6 +744,19 @@ func (m *Manager) handleCommand(command string) {
 			fmt.Println(ui.Error(err.Error()))
 		}
 	case "exit", "quit", "q":
+		// Check if there are active sessions
+		m.mu.RLock()
+		hasActiveSessions := len(m.sessions) > 0
+		m.mu.RUnlock()
+
+		if hasActiveSessions {
+			// Prompt for confirmation
+			if !ui.Confirm("Active sessions detected. Are you sure you want to exit?") {
+				fmt.Println(ui.Info("Exit cancelled"))
+				return
+			}
+		}
+
 		fmt.Println(ui.Success("Goodbye!"))
 		os.Exit(0)
 	case "clear", "cls":
@@ -782,17 +793,21 @@ func (m *Manager) showMenu() {
 
 // showHelp mostra ajuda dos comandos
 func (m *Manager) showHelp() {
+	// Collect all help lines
+	var lines []string
+	lines = append(lines, ui.Command("sessions, list, ls             - List active sessions"))
+	lines = append(lines, ui.Command("use <id>                       - Select session with given ID"))
+	lines = append(lines, ui.Command("shell                          - Enter interactive shell"))
+	lines = append(lines, ui.Command("upload <local> [remote]        - Upload file to remote system"))
+	lines = append(lines, ui.Command("download <remote> [local]      - Download file from remote system"))
+	lines = append(lines, ui.Command("kill <id>                      - Kill session with given ID"))
+	lines = append(lines, ui.Command("help, h                        - Show this help"))
+	lines = append(lines, ui.Command("clear, cls                     - Clear screen"))
+	lines = append(lines, ui.Command("exit, quit, q                  - Exit Gummy"))
+
+	// Render everything inside a box
 	fmt.Println()
-	fmt.Println(ui.CommandHelp("Available Commands"))
-	fmt.Println(ui.Command("sessions, list, ls              - List active sessions"))
-	fmt.Println(ui.Command("use <id>                       - Select session with given ID"))
-	fmt.Println(ui.Command("shell                          - Enter interactive shell (requires selected session)"))
-	fmt.Println(ui.Command("upload <local> [remote]        - Upload file to remote system"))
-	fmt.Println(ui.Command("download <remote> [local]      - Download file from remote system"))
-	fmt.Println(ui.Command("kill <id>                      - Kill session with given ID"))
-	fmt.Println(ui.Command("help, h                        - Show this help"))
-	fmt.Println(ui.Command("clear, cls                     - Clear screen"))
-	fmt.Println(ui.Command("exit, quit, q                  - Exit Gummy"))
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolCommand), lines))
 	fmt.Println()
 }
 
@@ -801,6 +816,13 @@ func (m *Manager) GetSessionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
+}
+
+// HasActiveSessions returns true if there are any active sessions
+func (m *Manager) HasActiveSessions() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions) > 0
 }
 
 // GetAllSessions retorna todas as sessões ativas ordenadas por NumID
