@@ -19,7 +19,6 @@ type Config struct {
 	Host      string
 	Interface string
 	IP        string // Resolved IP (from interface or direct)
-	LogLevel  string
 }
 
 func main() {
@@ -80,31 +79,47 @@ func parseFlags() *Config {
 
 	flag.StringVar(&ipFlag, "ip", "", "IP address to bind to (alternative to -i)")
 
-	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-
-	// Custom usage message
+	// Custom usage message with Gummy styling
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Gummy - Advanced Shell Handler for CTFs\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: %s -i <interface> -p <port>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "       %s -ip <address> -p <port>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\n%s\n", netutil.FormatInterfaceList())
+		// Print banner first
+		fmt.Println(ui.Banner())
+		fmt.Println()
+
+		// Error message
+		fmt.Println(ui.Error("Either -i <interface> or -ip <address> is required"))
+		fmt.Println()
+
+		// Usage instructions without box
+		fmt.Println(ui.CommandHelp("usage"))
+		fmt.Println(ui.Command(fmt.Sprintf("  %s -i <interface> -p <port>", os.Args[0])))
+		fmt.Println(ui.Command(fmt.Sprintf("  %s -ip <address> -p <port>", os.Args[0])))
+		fmt.Println()
+		fmt.Println(ui.CommandHelp("options"))
+		fmt.Println(ui.Command("  -i, -interface <name>    Network interface to bind to (e.g., eth0, eno1)"))
+		fmt.Println(ui.Command("  -ip <address>            IP address to bind to (alternative to -i)"))
+		fmt.Println(ui.Command("  -p, -port <number>       Port to listen on (default: 4444)"))
+		fmt.Println()
+
+		// Available interfaces in box
+		fmt.Println(netutil.FormatInterfaceList())
 	}
 
 	flag.Parse()
 
 	// Validate that either interface or IP is provided
 	if interfaceFlag == "" && ipFlag == "" {
-		fmt.Fprintf(os.Stderr, "%s\n\n", ui.Error("Error: Either -i <interface> or -ip <address> is required"))
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	// Both flags provided - error
 	if interfaceFlag != "" && ipFlag != "" {
-		fmt.Fprintf(os.Stderr, "%s\n\n", ui.Error("Error: Cannot specify both -i and -ip flags"))
-		flag.Usage()
+		// Print banner first
+		fmt.Println(ui.Banner())
+		fmt.Println()
+		fmt.Println(ui.Error("Cannot specify both -i and -ip flags"))
+		fmt.Println()
+		fmt.Println(ui.Info("Use either -i <interface> or -ip <address>, not both"))
 		os.Exit(1)
 	}
 
@@ -112,8 +127,12 @@ func parseFlags() *Config {
 	if interfaceFlag != "" {
 		ip, err := netutil.GetIPFromInterface(interfaceFlag)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n\n", ui.Error(fmt.Sprintf("Error: %v", err)))
-			fmt.Fprintf(os.Stderr, "%s\n", netutil.FormatInterfaceList())
+			// Print banner first
+			fmt.Println(ui.Banner())
+			fmt.Println()
+			fmt.Println(ui.Error(fmt.Sprintf("%v", err)))
+			fmt.Println()
+			fmt.Println(netutil.FormatInterfaceList())
 			os.Exit(1)
 		}
 		config.IP = ip
@@ -122,7 +141,10 @@ func parseFlags() *Config {
 	} else {
 		// Validate IP address
 		if !netutil.IsValidIP(ipFlag) {
-			fmt.Fprintf(os.Stderr, "%s\n", ui.Error(fmt.Sprintf("Error: Invalid IP address: %s", ipFlag)))
+			// Print banner first
+			fmt.Println(ui.Banner())
+			fmt.Println()
+			fmt.Println(ui.Error(fmt.Sprintf("Invalid IP address: %s", ipFlag)))
 			os.Exit(1)
 		}
 		config.IP = ipFlag

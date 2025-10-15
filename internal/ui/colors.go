@@ -12,19 +12,19 @@ import (
 // ANSI color codes inspirados nos scripts ezpz
 const (
 	// Colors
-	ColorReset    = "\033[0m"
-	ColorBold     = "\033[1m"
-	ColorDim      = "\033[2m"
+	ColorReset = "\033[0m"
+	ColorBold  = "\033[1m"
+	ColorDim   = "\033[2m"
 
 	// Foreground colors
-	ColorBlack    = "\033[30m"
-	ColorRed      = "\033[31m"
-	ColorGreen    = "\033[32m"
-	ColorYellow   = "\033[33m"
-	ColorBlue     = "\033[34m"
-	ColorMagenta  = "\033[35m"
-	ColorCyan     = "\033[36m"
-	ColorWhite    = "\033[37m"
+	ColorBlack   = "\033[30m"
+	ColorRed     = "\033[31m"
+	ColorGreen   = "\033[32m"
+	ColorYellow  = "\033[33m"
+	ColorBlue    = "\033[34m"
+	ColorMagenta = "\033[35m"
+	ColorCyan    = "\033[36m"
+	ColorWhite   = "\033[37m"
 
 	// Bright colors
 	ColorBrightBlack   = "\033[90m"
@@ -37,18 +37,18 @@ const (
 	ColorBrightWhite   = "\033[97m"
 
 	// Symbols (nerdfont only) - simplified set
-	SymbolDroplet     = "󰗣"    // Main gummy theme
-	SymbolTarget      = "󰓾"    // Target/session
-	SymbolFire        = ""    // Received shell
-	SymbolGem         = ""    // Active sessions header
-	SymbolSkull       = ""    // Session died
-	SymbolCommand     = ""   // Commands/arrows
-	SymbolInfo        = ""   // Information
-	SymbolCheck       = ""   // Information
-	SymbolDownload    = ""   // Information
-	SymbolUpload      = ""   // Information
-	SymbolError       = ""   // Information
-	SymbolWarning     = ""   // Information
+	SymbolDroplet  = "󰗣" // Main gummy theme
+	SymbolTarget   = "󰓾" // Target/session
+	SymbolFire     = "" // Received shell
+	SymbolGem      = "" // Active sessions header
+	SymbolSkull    = "" // Session died
+	SymbolCommand  = "" // Commands/arrows
+	SymbolInfo     = "" // Information
+	SymbolCheck    = "" // Information
+	SymbolDownload = "" // Information
+	SymbolUpload   = "" // Information
+	SymbolError    = "" // Information
+	SymbolWarning  = "" // Information
 )
 
 // Themed color functions inspired by ezpz scripts
@@ -180,6 +180,29 @@ func BoxWithTitle(title string, lines []string) string {
 	return boxStyle.Render(content)
 }
 
+// BoxWithTitlePadded creates a box with title and content lines with custom padding
+func BoxWithTitlePadded(title string, lines []string, paddingRight int) string {
+	// Title style
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("6")). // Cyan
+		Bold(true)
+
+	// Box style with border and custom padding
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("5")). // Magenta border
+		Padding(0, paddingRight)
+
+	// Join all content lines
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render(title),
+		"",
+		lipgloss.JoinVertical(lipgloss.Left, lines...),
+	)
+
+	return boxStyle.Render(content)
+}
+
 // Prompt with gummy theme
 func Prompt() string {
 	return fmt.Sprintf("%s%s%s gummy%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, ColorReset, ColorBrightMagenta, ColorReset)
@@ -206,7 +229,7 @@ func SessionOpened(id int, addr string) string {
 }
 
 func SessionClosed(id int, addr string) string {
-	return fmt.Sprintf("%s%s Session %d (%s) closed%s",
+	return fmt.Sprintf("%s%s Session %d (%s) closed!%s",
 		ColorRed, SymbolSkull, id, addr, ColorReset)
 }
 
@@ -359,28 +382,28 @@ func Confirm(message string) bool {
 
 	// Match gum styles: --prompt.foreground 6 --selected.background 5 --selected.foreground 255 --unselected.background 235
 	m := confirmModel{
-		prompt:      message,
-		affirmative: "Yes",
-		negative:    "No",
+		prompt:       message,
+		affirmative:  "Yes",
+		negative:     "No",
 		confirmation: true, // Start with Yes selected
-		showHelp:    true,
-		help:        help.New(),
-		keys:        keys,
+		showHelp:     true,
+		help:         help.New(),
+		keys:         keys,
 		promptStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")), // Cyan
 		selectedStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255")).
 			Background(lipgloss.Color("5")).
 			Bold(true).
-			Width(12).     // Width of 12 for better centering (divisible by both 2 and 3)
+			Width(12).              // Width of 12 for better centering (divisible by both 2 and 3)
 			Align(lipgloss.Center). // Center text in button
-			MarginRight(2), // Space between buttons
+			MarginRight(2),         // Space between buttons
 		unselectedStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
 			Background(lipgloss.Color("235")). // Light gray background
-			Width(12).     // Width of 12 for better centering (divisible by both 2 and 3)
-			Align(lipgloss.Center). // Center text in button
-			MarginRight(2), // Space between buttons
+			Width(12).                         // Width of 12 for better centering (divisible by both 2 and 3)
+			Align(lipgloss.Center).            // Center text in button
+			MarginRight(2),                    // Space between buttons
 	}
 
 	p := tea.NewProgram(m)

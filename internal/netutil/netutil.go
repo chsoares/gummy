@@ -3,7 +3,8 @@ package netutil
 import (
 	"fmt"
 	"net"
-	"strings"
+
+	"github.com/chsoares/gummy/internal/ui"
 )
 
 // GetIPFromInterface resolves an IP address from a network interface name
@@ -85,16 +86,22 @@ func ListInterfaces() ([]string, error) {
 	return result, nil
 }
 
-// FormatInterfaceList formats the interface list for display
+// FormatInterfaceList formats the interface list for display with Gummy styling
 func FormatInterfaceList() string {
 	ifaces, err := ListInterfaces()
 	if err != nil {
-		return fmt.Sprintf("Error listing interfaces: %v", err)
+		return ui.Error(fmt.Sprintf("Error listing interfaces: %v", err))
 	}
 
 	if len(ifaces) == 0 {
-		return "No network interfaces found"
+		return ui.Warning("No network interfaces found")
 	}
 
-	return "Available interfaces:\n  " + strings.Join(ifaces, "\n  ")
+	// Build lines for box
+	var lines []string
+	for _, iface := range ifaces {
+		lines = append(lines, ui.Command(fmt.Sprintf("  %s", iface)))
+	}
+
+	return ui.BoxWithTitlePadded(fmt.Sprintf("%s Available Interfaces", ui.SymbolGem), lines, 8)
 }
