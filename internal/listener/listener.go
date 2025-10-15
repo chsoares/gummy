@@ -20,6 +20,7 @@ type Listener struct {
 	sessionManager *session.Manager // Gerenciador de múltiplas sessões
 	mu             sync.RWMutex     // Protects concurrent access to listener state
 	shutdown       bool             // Flag to indicate graceful shutdown
+	silent         bool             // Suppress console output (for TUI mode)
 }
 
 // New creates a new Listener instance
@@ -29,7 +30,13 @@ func New(host string, port int) *Listener {
 		host:           host,
 		port:           port,
 		sessionManager: session.NewManager(),
+		silent:         false,
 	}
+}
+
+// SetSilent enables/disables console output
+func (l *Listener) SetSilent(silent bool) {
+	l.silent = silent
 }
 
 // Start begins listening for connections

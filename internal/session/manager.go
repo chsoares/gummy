@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -29,6 +30,7 @@ type Manager struct {
 	activeConn      net.Conn                // Conexão atualmente ativa (se houver)
 	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
 	menuActive      bool                    // Se estamos no menu principal
+	silent          bool                    // Suppress console output (for TUI mode)
 }
 
 // SessionInfo contém informações sobre uma sessão
@@ -257,7 +259,13 @@ func NewManager() *Manager {
 		nextID:          1,
 		selectedSession: nil,
 		menuActive:      true,
+		silent:          false,
 	}
+}
+
+// SetSilent enables/disables console output
+func (m *Manager) SetSilent(silent bool) {
+	m.silent = silent
 }
 
 // AddSession adiciona uma nova sessão ao gerenciador
@@ -291,12 +299,15 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
 
-	if m.menuActive {
-		// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
-		fmt.Printf("\r%s\n%s", ui.SessionOpened(session.NumID, remoteIP), ui.Prompt())
-	} else {
-		// Se não estivermos no menu, só mostrar a notificação
-		fmt.Println(ui.SessionOpened(session.NumID, remoteIP))
+	// Only print if not in silent mode (TUI)
+	if !m.silent {
+		if m.menuActive {
+			// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
+			fmt.Printf("\r%s\n%s", ui.SessionOpened(session.NumID, remoteIP), ui.Prompt())
+		} else {
+			// Se não estivermos no menu, só mostrar a notificação
+			fmt.Println(ui.SessionOpened(session.NumID, remoteIP))
+		}
 	}
 }
 
@@ -792,6 +803,24 @@ func (m *Manager) GetSessionCount() int {
 	return len(m.sessions)
 }
 
+// GetAllSessions retorna todas as sessões ativas ordenadas por NumID
+func (m *Manager) GetAllSessions() []*SessionInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessions := make([]*SessionInfo, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+
+	// Sort by NumID
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].NumID < sessions[j].NumID
+	})
+
+	return sessions
+}
+
 // flushStdin limpa o buffer stdin para evitar comandos residuais
 func (m *Manager) flushStdin() {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -822,8 +851,18 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 	// Create transferer
 	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
 
+	// Create context with cancel for ESC handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start watching for ESC key in background
+	go transfer.WatchForCancel(ctx, cancel)
+
+	// Show hint
+	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
+
 	// Perform upload
-	err := t.Upload(localPath, remotePath)
+	err := t.Upload(ctx, localPath, remotePath)
 	if err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Upload failed: %v", err)))
 		return
@@ -844,8 +883,18 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 	// Create transferer
 	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
 
+	// Create context with cancel for ESC handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start watching for ESC key in background
+	go transfer.WatchForCancel(ctx, cancel)
+
+	// Show hint
+	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
+
 	// Perform download
-	err := t.Download(remotePath, localPath)
+	err := t.Download(ctx, remotePath, localPath)
 	if err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Download failed: %v", err)))
 		return

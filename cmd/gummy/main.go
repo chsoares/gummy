@@ -9,14 +9,18 @@ import (
 	"syscall"
 
 	"github.com/chsoares/gummy/internal/listener"
+	"github.com/chsoares/gummy/internal/statusbar"
+	"github.com/chsoares/gummy/internal/tui"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Config holds the application configuration
 type Config struct {
-	Port     int
-	Host     string
-	LogLevel string
+	Port       int
+	Host       string
+	LogLevel   string
+	UseTUI     bool
+	UseStatusBar bool
 }
 
 func main() {
@@ -29,7 +33,7 @@ func main() {
 
 	// Show banner
 	fmt.Println(ui.Banner())
-	fmt.Println()
+	//fmt.Println()
 
 	// Initialize listener
 	l := listener.New(config.Host, config.Port)
@@ -39,9 +43,6 @@ func main() {
 		fmt.Println(ui.Error(fmt.Sprintf("Failed to start listener: %v", err)))
 		os.Exit(1)
 	}
-
-	fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
-	fmt.Println()
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -58,8 +59,28 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Start menu (blocks)
-	l.GetSessionManager().StartMenu()
+	// Choose UI mode
+	if config.UseTUI {
+		// TUI mode (experimental) - enable silent mode
+		l.GetSessionManager().SetSilent(true)
+		if err := tui.Start(l.GetSessionManager()); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("TUI error: %v", err)))
+			os.Exit(1)
+		}
+	} else {
+		// CLI mode with optional status bar
+		var bar *statusbar.StatusBar
+		if config.UseStatusBar {
+			bar = statusbar.New(l.GetSessionManager())
+			bar.Start()
+			defer bar.Stop()
+		} else {
+			fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
+			fmt.Println()
+		}
+
+		l.GetSessionManager().StartMenu()
+	}
 }
 
 // parseFlags parses command-line arguments
@@ -74,8 +95,11 @@ func parseFlags() *Config {
 	
 	flag.StringVar(&config.Host, "host", "0.0.0.0", "Host to bind to")
 	flag.StringVar(&config.Host, "h", "0.0.0.0", "Host to bind to (shorthand)")
-	
+
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+
+	flag.BoolVar(&config.UseTUI, "tui", false, "Use TUI mode (experimental)")
+	flag.BoolVar(&config.UseStatusBar, "statusbar", false, "Show status bar (experimental, has issues)")
 
 	// Custom usage message
 	flag.Usage = func() {

@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/ui"
+	"golang.org/x/term"
 )
 
 // Transferer handles file upload/download operations
@@ -29,7 +31,7 @@ type Config struct {
 // DefaultConfig returns default transfer configuration
 func DefaultConfig() Config {
 	return Config{
-		ChunkSize: 4096, // 4KB chunks
+		ChunkSize: 32768, // 32KB chunks (safe for most shells)
 		Timeout:   30 * time.Second,
 	}
 }
@@ -45,7 +47,8 @@ func New(conn net.Conn, sessionID string) *Transferer {
 // Upload sends a local file to the remote system
 // localPath: path to local file
 // remotePath: destination path on remote system (if empty, uses filename in remote cwd)
-func (t *Transferer) Upload(localPath, remotePath string) error {
+// Press ESC to cancel
+func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -58,7 +61,11 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 	}
 
 	fileSize := len(data)
-	fmt.Println(ui.Uploading(fmt.Sprintf("Uploading %s (%s)...", filepath.Base(localPath), formatSize(fileSize))))
+
+	// Start spinner
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Uploading %s... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	defer spinner.Stop() // Ensure cleanup on error paths
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
@@ -85,28 +92,47 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Send chunks with progress (only for files > 100KB)
+	// Send chunks with progress updates
 	bytesSent := 0
-	lastProgressUpdate := 0
 
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("upload cancelled by user")
+		default:
+		}
+
 		// Append chunk to remote file
 		cmd := fmt.Sprintf("echo '%s' >> %s.b64", chunk, remotePath)
-		t.conn.Write([]byte(cmd + "\n"))
-		time.Sleep(30 * time.Millisecond)
+		_, err := t.conn.Write([]byte(cmd + "\n"))
+		if err != nil {
+			return fmt.Errorf("connection lost during upload: %w", err)
+		}
+
+		// Longer sleep for larger chunks to avoid overwhelming the shell
+		time.Sleep(50 * time.Millisecond)
 
 		bytesSent += len(chunk)
 
-		// Show progress every 100KB for large files
-		if fileSize > 100*1024 && bytesSent-lastProgressUpdate >= 100*1024 {
-			fmt.Printf("\r%-50s\r Uploading... %s", "", formatSize(bytesSent))
-			lastProgressUpdate = bytesSent
+		// Calculate actual file progress (not base64 size)
+		actualBytes := int(float64(bytesSent) / 1.37)
+		if actualBytes > fileSize {
+			actualBytes = fileSize
 		}
-	}
+		percent := int(float64(actualBytes) / float64(fileSize) * 100)
 
-	// Clear progress line if we showed it
-	if fileSize > 100*1024 {
-		fmt.Printf("\r%-50s\r", "")
+		// Update spinner every 50 chunks or on last chunk
+		if i%50 == 0 || i == len(chunks)-1 {
+			spinner.Update(fmt.Sprintf("Uploading %s... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+		}
+
+		// Drain buffer every 25 chunks to prevent overflow
+		if i%25 == 0 && i > 0 {
+			time.Sleep(100 * time.Millisecond)
+			t.drainConnection()
+		}
 	}
 
 	// Decode base64 and save final file
@@ -156,6 +182,7 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 				line = strings.TrimSpace(line)
 				if len(line) == 32 && isHex(line) {
 					if line == checksum {
+						spinner.Stop()
 						fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
 						t.drainConnection()
 						return nil
@@ -166,6 +193,7 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 	}
 
 	// Fallback if MD5 check failed
+	spinner.Stop()
 	fmt.Println(ui.Success("Upload complete!"))
 	t.drainConnection()
 	return nil
@@ -174,13 +202,17 @@ func (t *Transferer) Upload(localPath, remotePath string) error {
 // Download retrieves a file from the remote system
 // remotePath: path to remote file
 // localPath: destination path on local system (if empty, saves to current directory)
-func (t *Transferer) Download(remotePath, localPath string) error {
+// Press ESC to cancel
+func (t *Transferer) Download(ctx context.Context, remotePath, localPath string) error {
 	// If localPath is empty, save to current directory with same filename
 	if localPath == "" {
 		localPath = filepath.Base(remotePath)
 	}
 
-	fmt.Println(ui.Downloading(fmt.Sprintf("Downloading %s...", filepath.Base(remotePath))))
+	// Start spinner for download
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Downloading %s... 0 B", filepath.Base(remotePath)))
+	defer spinner.Stop()
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
@@ -202,6 +234,13 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 	lastProgressUpdate := 0
 
 	for {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("download cancelled by user")
+		default:
+		}
+
 		// Reset deadline on each read
 		t.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
@@ -215,10 +254,9 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 			output.WriteString(string(buffer[:n]))
 			totalBytes += n
 
-			// Show progress every 100KB to avoid spam
+			// Update spinner every 100KB to avoid spam
 			if totalBytes-lastProgressUpdate >= 100*1024 {
-				// Clear line and show progress
-				fmt.Printf("\r%-50s\rReceiving data... %s", "", formatSize(totalBytes))
+				spinner.Update(fmt.Sprintf("Downloading %s... %s", filepath.Base(remotePath), formatSize(totalBytes)))
 				lastProgressUpdate = totalBytes
 			}
 
@@ -228,10 +266,6 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 			if lastStartIdx != -1 {
 				remainingAfterStart := currentOutput[lastStartIdx:]
 				if strings.Contains(remainingAfterStart, endMarker) {
-					// Complete! Clear progress line
-					if totalBytes > 100*1024 {
-						fmt.Printf("\r%-50s\r", "")
-					}
 					break
 				}
 			}
@@ -288,6 +322,7 @@ func (t *Transferer) Download(remotePath, localPath string) error {
 	hash := md5.Sum(decoded)
 	checksum := hex.EncodeToString(hash[:])
 
+	spinner.Stop()
 	fmt.Println(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
 		localPath, formatSize(len(decoded)), checksum[:8])))
 
@@ -345,12 +380,15 @@ func formatSize(bytes int) string {
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}
+
+	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
 	div, exp := int64(unit), 0
 	for n := bytes / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+
+	return fmt.Sprintf("%.1f %s", float64(bytes)/float64(div), units[exp])
 }
 
 // isHex checks if string is valid hexadecimal
@@ -380,4 +418,37 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// WatchForCancel watches for ESC key press and cancels context
+func WatchForCancel(ctx context.Context, cancel context.CancelFunc) {
+	// Save terminal state
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	buf := make([]byte, 3)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			// Set read timeout to check context periodically
+			os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				continue
+			}
+
+			if n > 0 {
+				// ESC key is byte 27
+				if buf[0] == 27 {
+					cancel()
+					return
+				}
+			}
+		}
+	}
 }

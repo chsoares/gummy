@@ -1,6 +1,10 @@
 package ui
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // ANSI color codes inspirados nos scripts ezpz
 const (
@@ -98,49 +102,39 @@ func SessionInactive(text string) string {
 
 // Banner function inspired by gum style
 func Banner() string {
+	// Define styles with Lipgloss
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("5")). // Magenta
+		Bold(true).
+		Padding(0, 1)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
+		Padding(0, 1)
+
 	droplet := SymbolDroplet
-	title := fmt.Sprintf(" %s gummy session handler ", droplet)
+	title := fmt.Sprintf("gummy shell %s", droplet)
 
-	// Calculate box dimensions - nerdfont symbols are usually 2 chars wide in terminals
-	textLen := len(" gummy session handler ")
-	nerdFontWidth := 2 // Most nerdfont symbols render as 2-char width
-	visualWidth := textLen + nerdFontWidth + 2 // +2 for spaces around
-	borderWidth := visualWidth + 2
-
-	// Create border
-	topBorder := "╭" + repeat("─", borderWidth-2) + "╮"
-	botBorder := "╰" + repeat("─", borderWidth-2) + "╯"
-	centeredTitle := centerText(title, borderWidth-2)
-
-	// Apply colors - cyan borders, magenta text
-	coloredBox := fmt.Sprintf("%s%s%s\n%s│%s%s%s%s│%s\n%s%s%s",
-		ColorCyan, topBorder, ColorReset,
-		ColorCyan, ColorMagenta, centeredTitle, ColorReset, ColorCyan, ColorReset,
-		ColorCyan, botBorder, ColorReset,
-	)
-
-	return coloredBox
+	return boxStyle.Render(titleStyle.Render(title))
 }
 
 // Subtitle banner for specific contexts
 func SubBanner(subtitle string) string {
+	// Define styles with Lipgloss
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("magenta")).
+		Padding(0, 1)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("cyan")).
+		Padding(0, 1)
+
 	droplet := SymbolDroplet
-	title := fmt.Sprintf(" %s %s ", droplet, subtitle)
+	title := fmt.Sprintf("%s %s", droplet, subtitle)
 
-	titleLen := len(fmt.Sprintf("  %s ", subtitle))
-	borderWidth := titleLen + 4
-
-	topBorder := "╭" + repeat("─", borderWidth-2) + "╮"
-	midBorder := "│" + centerText(title, borderWidth) + "│"
-	botBorder := "╰" + repeat("─", borderWidth-2) + "╯"
-
-	coloredBox := fmt.Sprintf("%s%s%s\n%s%s%s\n%s%s%s",
-		ColorCyan, topBorder, ColorReset,
-		ColorCyan, midBorder, ColorReset,
-		ColorCyan, botBorder, ColorReset,
-	)
-
-	return coloredBox
+	return boxStyle.Render(titleStyle.Render(title))
 }
 
 // Prompt with gummy theme
@@ -151,28 +145,6 @@ func Prompt() string {
 // PromptWithSession shows prompt with selected session number
 func PromptWithSession(sessionID int) string {
 	return fmt.Sprintf("%s%s%s gummy [%d]%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, sessionID, ColorReset, ColorBrightMagenta, ColorReset)
-}
-
-// Helper functions
-func repeat(char string, count int) string {
-	result := ""
-	for i := 0; i < count; i++ {
-		result += char
-	}
-	return result
-}
-
-func centerText(text string, width int) string {
-	textLen := len(text)
-	if textLen >= width {
-		return text
-	}
-
-	padding := (width - textLen) / 2
-	leftPad := repeat(" ", padding)
-	rightPad := repeat(" ", width-textLen-padding)
-
-	return leftPad + text + rightPad
 }
 
 // PTY status indicators
