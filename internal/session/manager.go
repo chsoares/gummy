@@ -12,11 +12,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
-	"github.com/chzyer/readline"
 	"github.com/chsoares/gummy/internal/shell"
 	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chzyer/readline"
 	"golang.org/x/term"
 )
 
@@ -32,14 +33,222 @@ type Manager struct {
 
 // SessionInfo contém informações sobre uma sessão
 type SessionInfo struct {
-	ID       string    // ID único da sessão (hex)
-	NumID    int       // ID numérico para facilitar uso
-	Conn     net.Conn  // Conexão TCP
-	RemoteIP string    // IP da vítima
-	Whoami   string    // user@host da vítima
+	ID       string         // ID único da sessão (hex)
+	NumID    int            // ID numérico para facilitar uso
+	Conn     net.Conn       // Conexão TCP
+	RemoteIP string         // IP da vítima
+	Whoami   string         // user@host da vítima
 	Handler  *shell.Handler // Shell handler
-	Active   bool      // Se está sendo usada atualmente
+	Active   bool           // Se está sendo usada atualmente
 }
+
+// GummyCompleter implements readline.AutoCompleter for smart path completion
+type GummyCompleter struct {
+	manager *Manager
+}
+
+// Do implements the AutoCompleter interface
+func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+	lineStr := string(line[:pos])
+	trimmed := strings.TrimLeft(lineStr, " \t")
+
+	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear"}
+
+	// Nothing typed yet, show all commands
+	if trimmed == "" {
+		matches, repl := c.completeFromList("", commands)
+		return matches, repl
+	}
+
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return nil, 0
+	}
+
+	// Still typing the command (no space yet)
+	if len(parts) == 1 && !strings.HasSuffix(trimmed, " ") {
+		prefix := parts[0]
+		matches, repl := c.completeFromList(prefix, commands)
+		return matches, repl
+	}
+
+	cmd := parts[0]
+	argCount := len(parts) - 1
+
+	// If the line ends with a space, we're starting a new argument
+	if strings.HasSuffix(trimmed, " ") {
+		argCount++
+	}
+
+	currentArg := c.getCurrentArg(trimmed)
+
+	switch cmd {
+	case "upload":
+		if argCount == 1 {
+			// First arg: complete local paths
+			return c.completeLocalPath(currentArg)
+		} else if argCount == 2 {
+			// Second arg: complete remote paths
+			return c.completeRemotePath(currentArg)
+		}
+	case "download":
+		if argCount == 1 {
+			// First arg: complete remote paths
+			return c.completeRemotePath(currentArg)
+		} else if argCount == 2 {
+			// Second arg: complete local paths
+			return c.completeLocalPath(currentArg)
+		}
+	}
+
+	return nil, 0
+}
+
+// getCurrentArg extracts the current argument being typed
+func (c *GummyCompleter) getCurrentArg(line string) string {
+	if strings.HasSuffix(line, " ") {
+		return ""
+	}
+
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return parts[len(parts)-1]
+}
+
+// completeFromList completes from a list of strings
+func (c *GummyCompleter) completeFromList(prefix string, list []string) ([][]rune, int) {
+	var candidates []string
+	for _, item := range list {
+		if strings.HasPrefix(item, prefix) {
+			candidates = append(candidates, item)
+		}
+	}
+
+	sort.Strings(candidates)
+
+	prefixRunes := []rune(prefix)
+	removeLen := len(prefixRunes)
+
+	matches := make([][]rune, 0, len(candidates))
+	for _, item := range candidates {
+		itemRunes := []rune(item)
+		if len(itemRunes) < removeLen {
+			continue
+		}
+		matches = append(matches, itemRunes[removeLen:])
+	}
+
+	return matches, removeLen
+}
+
+// completeLocalPath completes local file paths
+func (c *GummyCompleter) completeLocalPath(arg string) ([][]rune, int) {
+	replacementLen := utf8.RuneCountInString(arg)
+
+	dirPart, basePart := splitPathForCompletion(arg)
+	if arg == "~" || arg == "~"+string(os.PathSeparator) {
+		dirPart = "~" + string(os.PathSeparator)
+		basePart = ""
+	}
+
+	searchDir := dirPart
+	if searchDir == "" {
+		if strings.HasPrefix(arg, "~") {
+			searchDir = "~"
+		} else {
+			searchDir = "."
+		}
+	}
+
+	expandedDir := expandUserPath(searchDir)
+	entries, err := os.ReadDir(expandedDir)
+	if err != nil {
+		return nil, replacementLen
+	}
+
+	var suggestions []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if basePart != "" && !strings.HasPrefix(name, basePart) {
+			continue
+		}
+
+		suggestion := dirPart + name
+		if entry.IsDir() {
+			suggestion += string(os.PathSeparator)
+		}
+		if strings.HasPrefix(suggestion, arg) || arg == "" {
+			suggestions = append(suggestions, suggestion)
+		}
+	}
+
+	sort.Strings(suggestions)
+
+	argRunes := []rune(arg)
+	matches := make([][]rune, 0, len(suggestions))
+	for _, suggestion := range suggestions {
+		suggestionRunes := []rune(suggestion)
+		if len(argRunes) > len(suggestionRunes) {
+			continue
+		}
+		matches = append(matches, suggestionRunes[len(argRunes):])
+	}
+
+	return matches, replacementLen
+}
+
+// completeRemotePath attempts to complete remote file paths
+func (c *GummyCompleter) completeRemotePath(prefix string) ([][]rune, int) {
+	return nil, utf8.RuneCountInString(prefix)
+}
+
+func splitPathForCompletion(arg string) (dirPart, basePart string) {
+	if arg == "" {
+		return "", ""
+	}
+
+	// Support both / and \ as separators so Windows paths work too
+	lastSep := strings.LastIndexAny(arg, "/\\")
+	if lastSep == -1 {
+		return "", arg
+	}
+
+	return arg[:lastSep+1], arg[lastSep+1:]
+}
+
+func expandUserPath(path string) string {
+	if path == "" {
+		return "."
+	}
+
+	if path == "~" || path == "~"+string(os.PathSeparator) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return "."
+	}
+
+	if strings.HasPrefix(path, "~"+string(os.PathSeparator)) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+		return path
+	}
+
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+		return path
+	}
+
+	return path
+}
+
+// Remote path completion removed
 
 // NewManager cria um novo gerenciador de sessões
 func NewManager() *Manager {
@@ -265,10 +474,10 @@ func (m *Manager) detectWhoami(session *SessionInfo) {
 				line = strings.TrimSpace(line)
 				// Procura por user@host sem comandos
 				if strings.Contains(line, "@") &&
-				   !strings.Contains(line, "echo") &&
-				   !strings.Contains(line, "whoami") &&
-				   !strings.Contains(line, "hostname") &&
-				   !strings.Contains(line, "$") {
+					!strings.Contains(line, "echo") &&
+					!strings.Contains(line, "whoami") &&
+					!strings.Contains(line, "hostname") &&
+					!strings.Contains(line, "$") {
 
 					// Limpa a linha
 					cleaned := strings.ReplaceAll(line, "\r", "")
@@ -403,6 +612,9 @@ func (m *Manager) StartMenu() {
 	// Create .gummy directory if it doesn't exist
 	os.MkdirAll(filepath.Join(homeDir, ".gummy"), 0755)
 
+	// Create completer
+	completer := &GummyCompleter{manager: m}
+
 	rl, err := readline.NewEx(&readline.Config{
 		HistoryFile:            historyFile,
 		HistoryLimit:           1000,
@@ -410,6 +622,7 @@ func (m *Manager) StartMenu() {
 		InterruptPrompt:        "^C",
 		EOFPrompt:              "",
 		HistorySearchFold:      true,
+		AutoComplete:           completer,
 	})
 	if err != nil {
 		fmt.Printf("Warning: readline init failed, using basic input: %v\n", err)
