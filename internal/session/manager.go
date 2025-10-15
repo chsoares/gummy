@@ -881,8 +881,8 @@ func (m *Manager) showHelp() {
 	// Connect category
 	lines = append(lines, ui.CommandHelp("connect"))
 	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
-	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute reverse shell"))
-	lines = append(lines, ui.Command("winrm                        - Generate WinRM connection //TODO"))
+	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
+	lines = append(lines, ui.Command("winrm                        - Connect via WinRM and execute revshell //TODO"))
 	lines = append(lines, "")
 
 	// Handler category
@@ -897,7 +897,7 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.Command("shell                        - Enter interactive shell"))
 	lines = append(lines, ui.Command("upload <local> [remote]      - Upload file to remote system"))
 	lines = append(lines, ui.Command("download <remote> [local]    - Download file from remote system"))
-	lines = append(lines, ui.Command("spawn                        - Spawn new reverse shell from selected session"))
+	lines = append(lines, ui.Command("spawn                        - Spawn new shell from active session"))
 	lines = append(lines, ui.Command("run <module>                 - Run a module //TODO"))
 	lines = append(lines, "")
 
