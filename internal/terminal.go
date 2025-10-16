@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-
-	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Terminal emulator configuration
@@ -70,7 +68,7 @@ func OpenTerminal(command string) error {
 		args = append(args, "sh", "-c", command)
 	}
 
-	fmt.Println(ui.Info(fmt.Sprintf("Opening %s terminal...", terminal)))
+	// fmt.Println(ui.Info(fmt.Sprintf("Opening %s terminal...", terminal)))
 
 	cmd := exec.Command(terminal, args...)
 	cmd.Stdout = os.Stdout
