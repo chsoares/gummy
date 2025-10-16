@@ -35,14 +35,14 @@ type Manager struct {
 
 // SessionInfo contém informações sobre uma sessão
 type SessionInfo struct {
-	ID        string   // ID único da sessão (hex)
-	NumID     int      // ID numérico para facilitar uso
-	Conn      net.Conn // Conexão TCP
-	RemoteIP  string   // IP da vítima
-	Whoami    string   // user@host da vítima
-	Platform  string   // Plataforma (linux/windows/unknown)
-	Handler   *Handler // Shell handler
-	Active    bool     // Se está sendo usada atualmente
+	ID        string    // ID único da sessão (hex)
+	NumID     int       // ID numérico para facilitar uso
+	Conn      net.Conn  // Conexão TCP
+	RemoteIP  string    // IP da vítima
+	Whoami    string    // user@host da vítima
+	Platform  string    // Plataforma (linux/windows/unknown)
+	Handler   *Handler  // Shell handler
+	Active    bool      // Se está sendo usada atualmente
 	CreatedAt time.Time // Timestamp de criação
 }
 
@@ -233,7 +233,7 @@ func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
 }
 
 // GummyCompleter implements readline.AutoCompleter for smart path completion
-type GummyCompleter struct{
+type GummyCompleter struct {
 	manager *Manager
 }
 
@@ -667,7 +667,7 @@ func (m *Manager) handleModulesList() {
 	var lines []string
 
 	// Explicit category order (Linux, Windows, Misc, Custom)
-	categoryOrder := []string{"Linux", "Windows", "Misc", "Custom"}
+	categoryOrder := []string{"linux", "windows", "misc", "custom"}
 
 	// Build module list grouped by category
 	for _, cat := range categoryOrder {
@@ -688,7 +688,7 @@ func (m *Manager) handleModulesList() {
 		lines = lines[:len(lines)-1]
 	}
 
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Modules", ui.SymbolCommand), lines))
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Modules", ui.SymbolGem), lines))
 }
 
 // handleRunModule executa um módulo

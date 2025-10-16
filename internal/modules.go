@@ -132,7 +132,7 @@ var windowsPrivescScripts = []string{
 type PEASModule struct{}
 
 func (m *PEASModule) Name() string        { return "peas" }
-func (m *PEASModule) Category() string    { return "Linux" }
+func (m *PEASModule) Category() string    { return "linux" }
 func (m *PEASModule) Description() string { return "Run LinPEAS privilege escalation scanner" }
 
 func (m *PEASModule) Run(session *SessionInfo, args []string) error {
@@ -143,7 +143,7 @@ func (m *PEASModule) Run(session *SessionInfo, args []string) error {
 type LSEModule struct{}
 
 func (m *LSEModule) Name() string        { return "lse" }
-func (m *LSEModule) Category() string    { return "Linux" }
+func (m *LSEModule) Category() string    { return "linux" }
 func (m *LSEModule) Description() string { return "Run Linux Smart Enumeration" }
 
 func (m *LSEModule) Run(session *SessionInfo, args []string) error {
@@ -158,8 +158,8 @@ func (m *LSEModule) Run(session *SessionInfo, args []string) error {
 type PSPYModule struct{}
 
 func (m *PSPYModule) Name() string        { return "pspy" }
-func (m *PSPYModule) Category() string    { return "Linux" }
-func (m *PSPYModule) Description() string { return "Monitor processes without root (pspy64)" }
+func (m *PSPYModule) Category() string    { return "linux" }
+func (m *PSPYModule) Description() string { return "Run pspy process monitor" }
 
 func (m *PSPYModule) Run(session *SessionInfo, args []string) error {
 	// Default to pspy64, but could add detection for 32-bit systems
@@ -180,7 +180,7 @@ func (m *PSPYModule) Run(session *SessionInfo, args []string) error {
 type PrivescModule struct{}
 
 func (m *PrivescModule) Name() string        { return "privesc" }
-func (m *PrivescModule) Category() string    { return "Misc" }
+func (m *PrivescModule) Category() string    { return "misc" }
 func (m *PrivescModule) Description() string { return "Upload multiple privilege escalation scripts" }
 
 func (m *PrivescModule) Run(session *SessionInfo, args []string) error {
@@ -233,7 +233,7 @@ func getFilenameFromURL(url string) string {
 type ShellScriptModule struct{}
 
 func (m *ShellScriptModule) Name() string        { return "sh" }
-func (m *ShellScriptModule) Category() string    { return "Custom" }
+func (m *ShellScriptModule) Category() string    { return "custom" }
 func (m *ShellScriptModule) Description() string { return "Run arbitrary shell script from URL" }
 
 func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
