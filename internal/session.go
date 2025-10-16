@@ -35,14 +35,58 @@ type Manager struct {
 
 // SessionInfo contém informações sobre uma sessão
 type SessionInfo struct {
-	ID       string         // ID único da sessão (hex)
-	NumID    int            // ID numérico para facilitar uso
-	Conn     net.Conn       // Conexão TCP
-	RemoteIP string         // IP da vítima
-	Whoami   string         // user@host da vítima
-	Platform string         // Plataforma (linux/windows/unknown)
-	Handler  *Handler // Shell handler
-	Active   bool           // Se está sendo usada atualmente
+	ID        string   // ID único da sessão (hex)
+	NumID     int      // ID numérico para facilitar uso
+	Conn      net.Conn // Conexão TCP
+	RemoteIP  string   // IP da vítima
+	Whoami    string   // user@host da vítima
+	Platform  string   // Plataforma (linux/windows/unknown)
+	Handler   *Handler // Shell handler
+	Active    bool     // Se está sendo usada atualmente
+	CreatedAt time.Time // Timestamp de criação
+}
+
+// Directory retorna o diretório base da sessão
+// Formato: ~/.gummy/YYYY_MM_DD/ID_IP_user_hostname/
+func (s *SessionInfo) Directory() string {
+	date := s.CreatedAt.Format("2006_01_02")
+	whoami := sanitizePath(s.Whoami)
+	dirname := fmt.Sprintf("%d_%s_%s", s.NumID, s.RemoteIP, whoami)
+
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gummy", date, dirname)
+}
+
+// ScriptsDir retorna o diretório de scripts e cria se não existir
+func (s *SessionInfo) ScriptsDir() string {
+	dir := filepath.Join(s.Directory(), "scripts")
+	os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// LogsDir retorna o diretório de logs e cria se não existir
+func (s *SessionInfo) LogsDir() string {
+	dir := filepath.Join(s.Directory(), "logs")
+	os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// sanitizePath remove caracteres problemáticos do path
+func sanitizePath(s string) string {
+	replacer := strings.NewReplacer(
+		"@", "_",
+		"\\", "_",
+		"/", "_",
+		" ", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	)
+	return replacer.Replace(s)
 }
 
 // GummyCompleter implements readline.AutoCompleter for smart path completion
@@ -55,7 +99,7 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 	lineStr := string(line[:pos])
 	trimmed := strings.TrimLeft(lineStr, " \t")
 
-	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn"}
+	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn", "run", "modules"}
 
 	// Nothing typed yet, show all commands
 	if trimmed == "" {
@@ -292,18 +336,23 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	})
 
 	session := &SessionInfo{
-		ID:       id,
-		NumID:    m.nextID,
-		Conn:     conn,
-		RemoteIP: remoteIP,
-		Whoami:   "detecting...",
-		Platform: "detecting...",
-		Handler:  handler,
-		Active:   false,
+		ID:        id,
+		NumID:     m.nextID,
+		Conn:      conn,
+		RemoteIP:  remoteIP,
+		Whoami:    "detecting...",
+		Platform:  "detecting...",
+		Handler:   handler,
+		Active:    false,
+		CreatedAt: time.Now(),
 	}
 
 	m.sessions[id] = session
 	m.nextID++
+
+	// Create session directory structure
+	session.ScriptsDir()
+	session.LogsDir()
 
 	// Detecta whoami e platform em background
 	go m.detectSessionInfo(session)
@@ -464,6 +513,68 @@ func (m *Manager) KillSession(numID int) error {
 	fmt.Println(ui.SessionClosed(targetSession.NumID, targetSession.RemoteIP))
 
 	return nil
+}
+
+// handleModulesList lista todos os módulos disponíveis
+func (m *Manager) handleModulesList() {
+	registry := GetModuleRegistry()
+	categories := registry.ListByCategory()
+
+	if len(categories) == 0 {
+		fmt.Println(ui.Info("No modules available"))
+		return
+	}
+
+	var lines []string
+
+	// Sort categories for consistent display
+	var catNames []string
+	for cat := range categories {
+		catNames = append(catNames, cat)
+	}
+	sort.Strings(catNames)
+
+	// Build module list grouped by category
+	for _, cat := range catNames {
+		lines = append(lines, ui.CommandHelp(cat))
+		for _, mod := range categories[cat] {
+			line := fmt.Sprintf("%-15s - %s", mod.Name(), mod.Description())
+			lines = append(lines, ui.Command(line))
+		}
+		lines = append(lines, "")
+	}
+
+	// Remove trailing empty line
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Modules", ui.SymbolCommand), lines))
+}
+
+// handleRunModule executa um módulo
+func (m *Manager) handleRunModule(moduleName string, args []string) {
+	// Check if session is selected
+	if m.selectedSession == nil {
+		fmt.Println(ui.Error("No session selected. Use 'use <id>' first."))
+		return
+	}
+
+	// Get module from registry
+	registry := GetModuleRegistry()
+	module, exists := registry.Get(moduleName)
+	if !exists {
+		fmt.Println(ui.Error(fmt.Sprintf("Unknown module: %s", moduleName)))
+		fmt.Println(ui.Info("Type 'modules' to see available modules"))
+		return
+	}
+
+	// Run module
+	fmt.Println(ui.Info(fmt.Sprintf("Running module: %s (%s)", module.Name(), module.Category())))
+	if err := module.Run(m.selectedSession, args); err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Module failed: %v", err)))
+		return
+	}
 }
 
 // detectSessionInfo detecta user@host e plataforma da sessão em background
@@ -859,6 +970,15 @@ func (m *Manager) handleCommand(command string) {
 			localPath = parts[2]
 		}
 		m.handleDownload(parts[1], localPath)
+	case "modules":
+		m.handleModulesList()
+	case "run":
+		if len(parts) < 2 {
+			fmt.Println(ui.CommandHelp("Usage: run <module> [args...]"))
+			fmt.Println(ui.Info("Type 'modules' to see available modules"))
+			return
+		}
+		m.handleRunModule(parts[1], parts[2:])
 	default:
 		fmt.Println(ui.Warning(fmt.Sprintf("Unknown command: %s (type 'help' for available commands)", parts[0])))
 	}
@@ -894,7 +1014,12 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.Command("upload <local> [remote]      - Upload file to remote system"))
 	lines = append(lines, ui.Command("download <remote> [local]    - Download file from remote system"))
 	lines = append(lines, ui.Command("spawn                        - Spawn new shell from active session"))
-	lines = append(lines, ui.Command("run <module>                 - Run a module //TODO"))
+	lines = append(lines, "")
+
+	// Modules category
+	lines = append(lines, ui.CommandHelp("modules"))
+	lines = append(lines, ui.Command("modules                      - List available modules"))
+	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run enum, run lse)"))
 	lines = append(lines, "")
 
 	// Program category

