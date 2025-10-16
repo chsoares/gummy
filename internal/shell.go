@@ -406,6 +406,172 @@ func (h *Handler) ExecuteCommand(cmd string) (string, error) {
 	return output.String(), nil
 }
 
+// ExecuteWithStreaming executes a command remotely and streams output to local file
+// This is designed for long-running scripts like enumeration tools
+func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
+	remoteOutputPath := fmt.Sprintf("/tmp/gummy_%d.out", time.Now().Unix())
+	remoteDonePath := fmt.Sprintf("/tmp/gummy_%d.done", time.Now().Unix())
+
+	// Execute command in background with output redirect and done marker
+	// Format: (command > output.txt 2>&1; echo DONE > done.txt) &
+	bgCmd := fmt.Sprintf("(%s > %s 2>&1; echo DONE > %s) &\n", cmd, remoteOutputPath, remoteDonePath)
+
+	_, err := h.conn.Write([]byte(bgCmd))
+	if err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Wait for command to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Create local output file
+	localFile, err := os.Create(localOutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer localFile.Close()
+
+	// Poll and stream output
+	var lastSize int64 = 0
+	pollInterval := 1 * time.Second
+	maxEmptyPolls := 3
+	emptyPollCount := 0
+
+	for {
+		// Check if command is done
+		doneCheckCmd := fmt.Sprintf("test -f %s && echo EXISTS || echo NOTFOUND\n", remoteDonePath)
+		h.conn.Write([]byte(doneCheckCmd))
+		time.Sleep(200 * time.Millisecond)
+
+		// Read done check response
+		var doneCheck strings.Builder
+		buffer := make([]byte, 1024)
+		h.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+
+		for {
+			n, err := h.conn.Read(buffer)
+			if err != nil {
+				break
+			}
+			if n > 0 {
+				doneCheck.Write(buffer[:n])
+			}
+			if n < len(buffer) {
+				break
+			}
+		}
+		h.conn.SetReadDeadline(time.Time{})
+
+		isDone := strings.Contains(doneCheck.String(), "EXISTS")
+
+		// Get current output
+		tailCmd := fmt.Sprintf("tail -c +%d %s 2>/dev/null; echo\n", lastSize+1, remoteOutputPath)
+		h.conn.Write([]byte(tailCmd))
+		time.Sleep(300 * time.Millisecond)
+
+		// Read new output
+		var newOutput strings.Builder
+		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+		for {
+			n, err := h.conn.Read(buffer)
+			if err != nil {
+				break
+			}
+			if n > 0 {
+				newOutput.Write(buffer[:n])
+			}
+			if n < len(buffer) {
+				break
+			}
+		}
+		h.conn.SetReadDeadline(time.Time{})
+
+		newData := newOutput.String()
+
+		// Write new data to local file
+		if len(newData) > 0 {
+			localFile.WriteString(newData)
+			localFile.Sync()
+			lastSize += int64(len(newData))
+			emptyPollCount = 0
+		} else {
+			emptyPollCount++
+		}
+
+		// Exit conditions
+		if isDone {
+			// Command finished, do one final read
+			time.Sleep(200 * time.Millisecond)
+			tailCmd := fmt.Sprintf("tail -c +%d %s 2>/dev/null\n", lastSize+1, remoteOutputPath)
+			h.conn.Write([]byte(tailCmd))
+			time.Sleep(300 * time.Millisecond)
+
+			var finalOutput strings.Builder
+			h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			for {
+				n, err := h.conn.Read(buffer)
+				if err != nil {
+					break
+				}
+				if n > 0 {
+					finalOutput.Write(buffer[:n])
+				}
+				if n < len(buffer) {
+					break
+				}
+			}
+			h.conn.SetReadDeadline(time.Time{})
+
+			if finalOutput.Len() > 0 {
+				localFile.WriteString(finalOutput.String())
+				localFile.Sync()
+			}
+
+			// Cleanup remote files
+			cleanupCmd := fmt.Sprintf("rm -f %s %s\n", remoteOutputPath, remoteDonePath)
+			h.conn.Write([]byte(cleanupCmd))
+			time.Sleep(100 * time.Millisecond)
+
+			break
+		}
+
+		// If no new data for too long and not done, might be stuck
+		if emptyPollCount >= maxEmptyPolls {
+			// Check if file exists
+			checkCmd := fmt.Sprintf("test -f %s && echo EXISTS || echo NOTFOUND\n", remoteOutputPath)
+			h.conn.Write([]byte(checkCmd))
+			time.Sleep(200 * time.Millisecond)
+
+			var checkOutput strings.Builder
+			h.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			for {
+				n, err := h.conn.Read(buffer)
+				if err != nil {
+					break
+				}
+				if n > 0 {
+					checkOutput.Write(buffer[:n])
+				}
+				if n < len(buffer) {
+					break
+				}
+			}
+			h.conn.SetReadDeadline(time.Time{})
+
+			if !strings.Contains(checkOutput.String(), "EXISTS") {
+				// File doesn't exist, command might have failed
+				return fmt.Errorf("remote output file not found")
+			}
+		}
+
+		// Wait before next poll
+		time.Sleep(pollInterval)
+	}
+
+	return nil
+}
+
 // GetConnection returns the underlying connection
 // Used for direct file transfer operations
 func (h *Handler) GetConnection() net.Conn {

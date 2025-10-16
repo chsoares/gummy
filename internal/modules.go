@@ -162,19 +162,12 @@ func (m *EnumModule) Run(session *SessionInfo, args []string) error {
 		fmt.Println(ui.Info(fmt.Sprintf("Manually run: tail -f %s", outputPath)))
 	}
 
-	// Execute remotely and capture output
+	// Execute remotely with streaming output
 	fmt.Println(ui.Info("Executing enumeration script on victim..."))
 
 	go func() {
-		output, err := session.Handler.ExecuteCommand(fmt.Sprintf("bash %s\n", remotePath))
-		if err != nil {
+		if err := session.Handler.ExecuteWithStreaming(fmt.Sprintf("bash %s", remotePath), outputPath); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-
-		// Save output
-		if err := os.WriteFile(outputPath, []byte(output), 0644); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Failed to save output: %v", err)))
 			return
 		}
 
@@ -232,19 +225,12 @@ func (m *LSEModule) Run(session *SessionInfo, args []string) error {
 		fmt.Println(ui.Info(fmt.Sprintf("Manually run: tail -f %s", outputPath)))
 	}
 
-	// Execute
+	// Execute with streaming output
 	fmt.Println(ui.Info(fmt.Sprintf("Running LSE on victim (level: %s)...", level)))
 
 	go func() {
-		output, err := session.Handler.ExecuteCommand(fmt.Sprintf("bash %s %s\n", remotePath, level))
-		if err != nil {
+		if err := session.Handler.ExecuteWithStreaming(fmt.Sprintf("bash %s %s", remotePath, level), outputPath); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-
-		// Save output
-		if err := os.WriteFile(outputPath, []byte(output), 0644); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Failed to save output: %v", err)))
 			return
 		}
 
