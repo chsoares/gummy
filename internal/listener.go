@@ -1,4 +1,4 @@
-package listener
+package internal
 
 import (
 	"crypto/rand"
@@ -8,7 +8,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/chsoares/gummy/internal/session"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
@@ -18,7 +17,7 @@ type Listener struct {
 	port           int
 	listenerIP     string           // IP for payload generation
 	listener       net.Listener
-	sessionManager *session.Manager // Gerenciador de múltiplas sessões
+	sessionManager *Manager // Gerenciador de múltiplas sessões
 	mu             sync.RWMutex     // Protects concurrent access to listener state
 	shutdown       bool             // Flag to indicate graceful shutdown
 	silent         bool             // Suppress console output (reserved for future use)
@@ -26,11 +25,11 @@ type Listener struct {
 
 // New creates a new Listener instance
 // Go convention: constructor functions are usually called "New"
-func New(host string, port int) *Listener {
+func NewListener(host string, port int) *Listener {
 	return &Listener{
 		host:           host,
 		port:           port,
-		sessionManager: session.NewManager(),
+		sessionManager: NewManager(),
 		silent:         false,
 	}
 }
@@ -128,7 +127,7 @@ func (l *Listener) handleConnection(conn net.Conn) {
 }
 
 // GetSessionManager retorna o gerenciador de sessões
-func (l *Listener) GetSessionManager() *session.Manager {
+func (l *Listener) GetSessionManager() *Manager {
 	return l.sessionManager
 }
 

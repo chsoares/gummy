@@ -1,4 +1,4 @@
-package shell
+package internal
 
 import (
 	"fmt"
@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chsoares/gummy/internal/pty"
 	"github.com/chsoares/gummy/internal/ui"
 	"golang.org/x/term"
 )
@@ -203,7 +202,7 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 
 // attemptPTYUpgrade tenta fazer upgrade da shell para PTY
 func (h *Handler) attemptPTYUpgrade() {
-	upgrader := pty.NewPTYUpgrader(h.conn, h.sessionID)
+	upgrader := NewPTYUpgrader(h.conn, h.sessionID)
 
 	err := upgrader.TryUpgrade()
 	if err == nil {

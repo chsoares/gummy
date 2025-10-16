@@ -1,4 +1,4 @@
-package pty
+package internal
 
 import (
 	"fmt"

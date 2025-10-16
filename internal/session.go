@@ -1,4 +1,4 @@
-package session
+package internal
 
 import (
 	"context"
@@ -15,10 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/chsoares/gummy/internal/payloads"
-	"github.com/chsoares/gummy/internal/shell"
-	"github.com/chsoares/gummy/internal/ssh"
-	"github.com/chsoares/gummy/internal/transfer"
 	"github.com/chsoares/gummy/internal/ui"
 	"github.com/chzyer/readline"
 	"golang.org/x/term"
@@ -45,7 +41,7 @@ type SessionInfo struct {
 	RemoteIP string         // IP da vítima
 	Whoami   string         // user@host da vítima
 	Platform string         // Plataforma (linux/windows/unknown)
-	Handler  *shell.Handler // Shell handler
+	Handler  *Handler // Shell handler
 	Active   bool           // Se está sendo usada atualmente
 }
 
@@ -288,7 +284,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	handler := shell.NewHandler(conn, id)
+	handler := NewHandler(conn, id)
 
 	// Configure callback para quando conexão fechar
 	handler.SetCloseCallback(func(sessionID string) {
@@ -971,14 +967,14 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 	}
 
 	// Create transferer
-	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
+	t := NewTransferer(m.selectedSession.Conn, m.selectedSession.ID)
 
 	// Create context with cancel for ESC handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Start watching for ESC key in background
-	go transfer.WatchForCancel(ctx, cancel)
+	go WatchForCancel(ctx, cancel)
 
 	// Show hint
 	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
@@ -1003,14 +999,14 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 	}
 
 	// Create transferer
-	t := transfer.New(m.selectedSession.Conn, m.selectedSession.ID)
+	t := NewTransferer(m.selectedSession.Conn, m.selectedSession.ID)
 
 	// Create context with cancel for ESC handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Start watching for ESC key in background
-	go transfer.WatchForCancel(ctx, cancel)
+	go WatchForCancel(ctx, cancel)
 
 	// Show hint
 	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
@@ -1039,7 +1035,7 @@ func (m *Manager) handleRev(ip string, port int) {
 	}
 
 	// Create payload generator
-	gen := payloads.NewReverseShellGenerator(ip, port)
+	gen := NewReverseShellGenerator(ip, port)
 
 	// Bash payloads
 	fmt.Println(ui.CommandHelp("Bash"))
@@ -1153,7 +1149,7 @@ func (m *Manager) handleSSH(target string) {
 	}
 
 	// Create SSH connector
-	connector := ssh.NewSSHConnector(m.listenerIP, m.listenerPort)
+	connector := NewSSHConnector(m.listenerIP, m.listenerPort)
 
 	// Connect silently (only SSH password prompt will show)
 	err := connector.ConnectInteractive(target)

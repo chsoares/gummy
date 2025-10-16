@@ -8,8 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/chsoares/gummy/internal/listener"
-	"github.com/chsoares/gummy/internal/netutil"
+	"github.com/chsoares/gummy/internal"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
@@ -35,7 +34,7 @@ func main() {
 	fmt.Println()
 
 	// Initialize listener with resolved IP
-	l := listener.New(config.Host, config.Port)
+	l := internal.NewListener(config.Host, config.Port)
 	l.SetListenerIP(config.IP) // Set the IP for payload generation
 
 	// Start listening for connections
@@ -101,7 +100,7 @@ func parseFlags() *Config {
 		fmt.Println()
 
 		// Available interfaces in box
-		fmt.Println(netutil.FormatInterfaceList())
+		fmt.Println(internal.FormatInterfaceList())
 	}
 
 	flag.Parse()
@@ -125,14 +124,14 @@ func parseFlags() *Config {
 
 	// Resolve IP from interface
 	if interfaceFlag != "" {
-		ip, err := netutil.GetIPFromInterface(interfaceFlag)
+		ip, err := internal.GetIPFromInterface(interfaceFlag)
 		if err != nil {
 			// Print banner first
 			fmt.Println(ui.Banner())
 			fmt.Println()
 			fmt.Println(ui.Error(fmt.Sprintf("%v", err)))
 			fmt.Println()
-			fmt.Println(netutil.FormatInterfaceList())
+			fmt.Println(internal.FormatInterfaceList())
 			os.Exit(1)
 		}
 		config.IP = ip
@@ -140,7 +139,7 @@ func parseFlags() *Config {
 		config.Host = ip // Bind to the specific interface IP
 	} else {
 		// Validate IP address
-		if !netutil.IsValidIP(ipFlag) {
+		if !internal.IsValidIP(ipFlag) {
 			// Print banner first
 			fmt.Println(ui.Banner())
 			fmt.Println()

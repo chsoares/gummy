@@ -1,4 +1,4 @@
-package payloads
+package internal
 
 import (
 	"encoding/base64"

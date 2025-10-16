@@ -1,4 +1,4 @@
-package transfer
+package internal
 
 import (
 	"context"
@@ -36,8 +36,8 @@ func DefaultConfig() Config {
 	}
 }
 
-// New creates a new Transferer instance
-func New(conn net.Conn, sessionID string) *Transferer {
+// NewTransferer creates a new Transferer instance
+func NewTransferer(conn net.Conn, sessionID string) *Transferer {
 	return &Transferer{
 		conn:      conn,
 		sessionID: sessionID,
