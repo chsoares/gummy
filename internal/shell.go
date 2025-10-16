@@ -407,23 +407,8 @@ func (h *Handler) ExecuteCommand(cmd string) (string, error) {
 }
 
 // ExecuteWithStreaming executes a command remotely and streams output to local file
-// This is designed for long-running scripts like enumeration tools
+// This captures output directly from the connection in real-time (like Penelope does)
 func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
-	remoteOutputPath := fmt.Sprintf("/tmp/gummy_%d.out", time.Now().Unix())
-	remoteDonePath := fmt.Sprintf("/tmp/gummy_%d.done", time.Now().Unix())
-
-	// Execute command in background with output redirect and done marker
-	// Format: (command > output.txt 2>&1; echo DONE > done.txt) &
-	bgCmd := fmt.Sprintf("(%s > %s 2>&1; echo DONE > %s) &\n", cmd, remoteOutputPath, remoteDonePath)
-
-	_, err := h.conn.Write([]byte(bgCmd))
-	if err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Wait for command to start
-	time.Sleep(500 * time.Millisecond)
-
 	// Create local output file
 	localFile, err := os.Create(localOutputPath)
 	if err != nil {
@@ -431,142 +416,65 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	}
 	defer localFile.Close()
 
-	// Poll and stream output
-	var lastSize int64 = 0
-	pollInterval := 1 * time.Second
-	maxEmptyPolls := 3
-	emptyPollCount := 0
+	// Send command with a unique marker at the end
+	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	fullCmd := fmt.Sprintf("%s; echo '%s'\n", cmd, marker)
+
+	_, err = h.conn.Write([]byte(fullCmd))
+	if err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Read output in real-time until we see the marker
+	buffer := make([]byte, 4096)
+	var accumulated strings.Builder
+	h.conn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Max 5 minutes for script
 
 	for {
-		// Check if command is done
-		doneCheckCmd := fmt.Sprintf("test -f %s && echo EXISTS || echo NOTFOUND\n", remoteDonePath)
-		h.conn.Write([]byte(doneCheckCmd))
-		time.Sleep(200 * time.Millisecond)
-
-		// Read done check response
-		var doneCheck strings.Builder
-		buffer := make([]byte, 1024)
-		h.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-
-		for {
-			n, err := h.conn.Read(buffer)
-			if err != nil {
+		n, err := h.conn.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
 				break
 			}
-			if n > 0 {
-				doneCheck.Write(buffer[:n])
-			}
-			if n < len(buffer) {
+			// Check if it's just a timeout with accumulated data
+			if accumulated.Len() > 0 && strings.Contains(accumulated.String(), marker) {
 				break
 			}
+			return fmt.Errorf("read error: %w", err)
 		}
-		h.conn.SetReadDeadline(time.Time{})
 
-		isDone := strings.Contains(doneCheck.String(), "EXISTS")
+		if n > 0 {
+			chunk := string(buffer[:n])
+			accumulated.WriteString(chunk)
 
-		// Get current output
-		tailCmd := fmt.Sprintf("tail -c +%d %s 2>/dev/null; echo\n", lastSize+1, remoteOutputPath)
-		h.conn.Write([]byte(tailCmd))
-		time.Sleep(300 * time.Millisecond)
-
-		// Read new output
-		var newOutput strings.Builder
-		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-
-		for {
-			n, err := h.conn.Read(buffer)
-			if err != nil {
-				break
-			}
-			if n > 0 {
-				newOutput.Write(buffer[:n])
-			}
-			if n < len(buffer) {
-				break
-			}
-		}
-		h.conn.SetReadDeadline(time.Time{})
-
-		newData := newOutput.String()
-
-		// Write new data to local file
-		if len(newData) > 0 {
-			localFile.WriteString(newData)
+			// Write to local file immediately (real-time streaming)
+			localFile.WriteString(chunk)
 			localFile.Sync()
-			lastSize += int64(len(newData))
-			emptyPollCount = 0
-		} else {
-			emptyPollCount++
-		}
 
-		// Exit conditions
-		if isDone {
-			// Command finished, do one final read
-			time.Sleep(200 * time.Millisecond)
-			tailCmd := fmt.Sprintf("tail -c +%d %s 2>/dev/null\n", lastSize+1, remoteOutputPath)
-			h.conn.Write([]byte(tailCmd))
-			time.Sleep(300 * time.Millisecond)
-
-			var finalOutput strings.Builder
-			h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			for {
-				n, err := h.conn.Read(buffer)
-				if err != nil {
-					break
-				}
-				if n > 0 {
-					finalOutput.Write(buffer[:n])
-				}
-				if n < len(buffer) {
-					break
-				}
-			}
-			h.conn.SetReadDeadline(time.Time{})
-
-			if finalOutput.Len() > 0 {
-				localFile.WriteString(finalOutput.String())
-				localFile.Sync()
-			}
-
-			// Cleanup remote files
-			cleanupCmd := fmt.Sprintf("rm -f %s %s\n", remoteOutputPath, remoteDonePath)
-			h.conn.Write([]byte(cleanupCmd))
-			time.Sleep(100 * time.Millisecond)
-
-			break
-		}
-
-		// If no new data for too long and not done, might be stuck
-		if emptyPollCount >= maxEmptyPolls {
-			// Check if file exists
-			checkCmd := fmt.Sprintf("test -f %s && echo EXISTS || echo NOTFOUND\n", remoteOutputPath)
-			h.conn.Write([]byte(checkCmd))
-			time.Sleep(200 * time.Millisecond)
-
-			var checkOutput strings.Builder
-			h.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-			for {
-				n, err := h.conn.Read(buffer)
-				if err != nil {
-					break
-				}
-				if n > 0 {
-					checkOutput.Write(buffer[:n])
-				}
-				if n < len(buffer) {
-					break
-				}
-			}
-			h.conn.SetReadDeadline(time.Time{})
-
-			if !strings.Contains(checkOutput.String(), "EXISTS") {
-				// File doesn't exist, command might have failed
-				return fmt.Errorf("remote output file not found")
+			// Check if we've received the completion marker
+			if strings.Contains(accumulated.String(), marker) {
+				break
 			}
 		}
+	}
 
-		// Wait before next poll
-		time.Sleep(pollInterval)
+	h.conn.SetReadDeadline(time.Time{})
+
+	// Remove the marker from the output file
+	finalContent := accumulated.String()
+	markerIndex := strings.Index(finalContent, marker)
+	if markerIndex != -1 {
+		// Rewrite file without the marker
+		localFile.Seek(0, 0)
+		localFile.Truncate(0)
+		cleanContent := finalContent[:markerIndex]
+		// Also remove the command echo if present (first line might be the command)
+		lines := strings.Split(cleanContent, "\n")
+		if len(lines) > 1 && strings.Contains(lines[0], cmd) {
+			cleanContent = strings.Join(lines[1:], "\n")
+		}
+		localFile.WriteString(cleanContent)
+		localFile.Sync()
 	}
 
 	return nil
