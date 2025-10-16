@@ -473,68 +473,10 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 		finalContent = finalContent[:markerIndex]
 	}
 
-	// Split into lines for cleaning
-	lines := strings.Split(finalContent, "\n")
-
-	// Find first line that looks like actual script output
-	// Skip: command echoes, chmod, prompts [user@host ~]$
-	startIdx := 0
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Skip empty lines
-		if trimmed == "" {
-			continue
-		}
-		// Skip command echoes (contains the actual command we sent)
-		if strings.Contains(line, "chmod") || strings.Contains(line, "bash /tmp/") {
-			continue
-		}
-		// Skip shell prompts
-		if strings.Contains(line, "@") && (strings.Contains(line, "$") || strings.Contains(line, "#")) {
-			continue
-		}
-		// Skip the marker echo command itself
-		if strings.Contains(line, "echo") && strings.Contains(line, "GUMMY") {
-			continue
-		}
-		// Found first real output line
-		startIdx = i
-		break
-	}
-
-	// Find last line that's actual output (remove trailing prompts)
-	endIdx := len(lines) - 1
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		// Skip empty lines at end
-		if trimmed == "" {
-			continue
-		}
-		// Skip trailing prompts
-		if strings.Contains(lines[i], "@") && (strings.Contains(lines[i], "$") || strings.Contains(lines[i], "#")) {
-			continue
-		}
-		// Found last real line
-		endIdx = i
-		break
-	}
-
-	// Extract clean content
-	var cleanContent string
-	if startIdx <= endIdx {
-		cleanContent = strings.Join(lines[startIdx:endIdx+1], "\n")
-	}
-
-	// Rewrite file with clean content
-	localFile.Seek(0, 0)
-	localFile.Truncate(0)
-	if cleanContent != "" {
-		localFile.WriteString(cleanContent)
-		if !strings.HasSuffix(cleanContent, "\n") {
-			localFile.WriteString("\n")
-		}
-	}
-	localFile.Sync()
+	// Don't rewrite the file - leave raw output intact
+	// This prevents tail -f from showing duplicate content when file is truncated
+	// User can see raw output in real-time via tail -f in separate terminal
+	// If they want clean output later, they can manually clean it or use cat
 
 	return nil
 }
@@ -609,64 +551,10 @@ func (h *Handler) ExecuteScriptFromStdin(interpreter, args string, scriptData []
 		finalContent = finalContent[:markerIndex]
 	}
 
-	// Split and clean lines
-	lines := strings.Split(finalContent, "\n")
-
-	// Skip initial noise (printf command, prompts, etc.)
-	startIdx := 0
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		// Skip printf command echo
-		if strings.Contains(line, "printf") && strings.Contains(line, interpreter) {
-			continue
-		}
-		// Skip interpreter invocation
-		if strings.Contains(line, interpreter) && strings.Contains(line, "-s") {
-			continue
-		}
-		// Skip prompts
-		if strings.Contains(line, "@") && (strings.Contains(line, "$") || strings.Contains(line, "#")) {
-			continue
-		}
-		// Found first real line
-		startIdx = i
-		break
-	}
-
-	// Skip trailing noise
-	endIdx := len(lines) - 1
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" {
-			continue
-		}
-		// Skip trailing prompts
-		if strings.Contains(lines[i], "@") && (strings.Contains(lines[i], "$") || strings.Contains(lines[i], "#")) {
-			continue
-		}
-		endIdx = i
-		break
-	}
-
-	// Extract clean content
-	var cleanContent string
-	if startIdx <= endIdx {
-		cleanContent = strings.Join(lines[startIdx:endIdx+1], "\n")
-	}
-
-	// Rewrite file with clean content
-	localFile.Seek(0, 0)
-	localFile.Truncate(0)
-	if cleanContent != "" {
-		localFile.WriteString(cleanContent)
-		if !strings.HasSuffix(cleanContent, "\n") {
-			localFile.WriteString("\n")
-		}
-	}
-	localFile.Sync()
+	// Don't rewrite the file - leave raw output intact
+	// This prevents tail -f from showing duplicate content when file is truncated
+	// User can see raw output in real-time via tail -f in separate terminal
+	// If they want clean output later, they can manually clean it or use cat
 
 	return nil
 }

@@ -577,8 +577,9 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 			// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
 			fmt.Printf("\r%s\n%s", ui.SessionOpened(session.NumID, remoteIP), ui.Prompt())
 		} else {
-			// Se não estivermos no menu, só mostrar a notificação
-			fmt.Println(ui.SessionOpened(session.NumID, remoteIP))
+			// Se estivermos em uma shell interativa, apenas quebrar linha e mostrar notificação
+			// Deixa o usuário continuar na shell atual (pode apertar Enter para novo prompt)
+			fmt.Printf("\r\n%s\n", ui.SessionOpened(session.NumID, remoteIP))
 		}
 	}
 }
@@ -1429,31 +1430,30 @@ func (m *Manager) handleSpawn() {
 		return
 	}
 
-	// Create spinner for spawn operation
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Spawning new %s reverse shell...", platform))
-
 	// Send payload silently
 	_, err := m.selectedSession.Conn.Write([]byte(payload))
 	if err != nil {
-		spinner.Stop()
 		fmt.Println(ui.Error(fmt.Sprintf("Failed to send spawn command: %v", err)))
 		return
 	}
 
-	// Drain any immediate output
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		drainBuffer := make([]byte, 2048)
-		m.selectedSession.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		for {
-			n, err := m.selectedSession.Conn.Read(drainBuffer)
-			if err != nil || n == 0 {
-				break
-			}
+	// Drain command echo BEFORE starting spinner to avoid race condition
+	// The remote shell will echo the command, we need to consume it silently
+	time.Sleep(150 * time.Millisecond) // Give shell time to echo
+	drainBuffer := make([]byte, 4096)
+	m.selectedSession.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		n, err := m.selectedSession.Conn.Read(drainBuffer)
+		if err != nil || n == 0 {
+			break
 		}
-		m.selectedSession.Conn.SetReadDeadline(time.Time{})
-	}()
+		// Silently discard the echo
+	}
+	m.selectedSession.Conn.SetReadDeadline(time.Time{})
+
+	// NOW start spinner after draining echo
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Spawning new %s reverse shell...", platform))
 
 	// Wait briefly for connection (max 5 seconds)
 	startTime := time.Now()
@@ -1466,14 +1466,14 @@ func (m *Manager) handleSpawn() {
 		// Check if new session arrived
 		if m.GetSessionCount() > initialSessionCount {
 			spinner.Stop()
-			fmt.Println(ui.Success("New session spawned successfully"))
+			// Session notification already printed by SessionOpened()
 			return
 		}
 	}
 
 	// Timeout - but connection might still arrive later
 	spinner.Stop()
-	fmt.Println(ui.Info("Payload sent. Waiting for connection..."))
+	fmt.Println(ui.Info("Payload sent, waiting for connection..."))
 }
 
 // handleSSH connects to a remote host via SSH and executes reverse shell payload
@@ -1499,5 +1499,5 @@ func (m *Manager) handleSSH(target string) {
 	}
 
 	// Success - session should appear in list automatically via SessionOpened()
-	fmt.Println(ui.Info("Waiting for reverse shell connection..."))
+	// No need to print anything here, the notification will appear when session connects
 }
