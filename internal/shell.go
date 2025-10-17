@@ -12,16 +12,18 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/ui"
+	"github.com/peterh/liner"
 	"golang.org/x/term"
 )
 
 // Handler gerencia uma sessão de reverse shell
 // A vítima já enviou uma shell conectada, nós fazemos relay do I/O
 type Handler struct {
-	conn         net.Conn // Conexão com a vítima (que já tem shell rodando)
-	sessionID    string   // ID da sessão para logs
-	originalTerm *term.State // Estado original do terminal para restaurar
+	conn         net.Conn     // Conexão com a vítima (que já tem shell rodando)
+	sessionID    string       // ID da sessão para logs
+	originalTerm *term.State  // Estado original do terminal para restaurar
 	onClose      func(string) // Callback quando conexão fechar
+	platform     string       // Platform detected ("windows", "linux", "unknown")
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -41,18 +43,19 @@ func (h *Handler) SetCloseCallback(callback func(string)) {
 	h.onClose = callback
 }
 
+// SetPlatform define a plataforma detectada (chamado antes de Start())
+func (h *Handler) SetPlatform(platform string) {
+	h.platform = platform
+}
+
 // Start inicia o relay interativo entre usuário local e shell remota
 // Esta é a função principal que conecta stdin/stdout local com a conexão remota
 func (h *Handler) Start() error {
-	// Configura terminal em modo raw para evitar echo duplo
-	if err := h.setupRawMode(); err != nil {
-		fmt.Printf("Warning: failed to setup raw mode: %v\n", err)
-	}
+	// NÃO configuramos raw mode aqui!
+	// Raw mode só é usado APÓS upgrade PTY bem-sucedido (como o Penelope faz)
+	// Windows PowerShell e shells básicas usam input normal (line-buffered)
 
-	// Garante que o terminal será restaurado ao sair
-	defer h.restoreTerminal()
-
-	// Configura handler para Ctrl+C para restaurar terminal
+	// Configura handler para Ctrl+C
 	h.setupSignalHandler()
 
 	// Testa se a conexão está realmente viva
@@ -80,17 +83,38 @@ func (h *Handler) Start() error {
 	// Remove timeout após conectar
 	h.conn.SetReadDeadline(time.Time{})
 
-	// Tenta upgrade PTY antes de iniciar I/O relay
-	h.attemptPTYUpgrade()
+	// Tenta upgrade PTY apenas se não for Windows
+	// Se bem-sucedido, ativa raw mode (como o Penelope faz)
+	ptySuccess := false
+	if h.platform != "windows" {
+		ptySuccess = h.attemptPTYUpgrade()
+	}
 
-	// Drain adicional para garantir shell limpa
-	h.drainBeforeInteractive()
+	// Se PTY upgrade funcionou, ativa raw mode
+	if ptySuccess {
+		if err := h.setupRawMode(); err != nil {
+			fmt.Printf("Warning: failed to setup raw mode after PTY: %v\n", err)
+		} else {
+			defer h.restoreTerminal()
+		}
+	}
+
+	// Não precisa de drain adicional - detectSessionInfo() já rodou antes de Start()
+	// e consumiu todo o output de detecção
 
 	// Inicia goroutines para relay bidirecional de I/O
 	errorChan := make(chan error, 2)
 
-	// Goroutine 1: Local stdin → Remote connection (nossos comandos → vítima)
-	go h.relayLocalToRemote(errorChan)
+	// Se temos PTY (raw mode), usa relay normal
+	// Se não temos PTY, usa readline loop (line-buffered)
+	if ptySuccess {
+		// Modo PTY: raw input, relay direto
+		go h.relayLocalToRemote(errorChan)
+	} else {
+		// Modo readline: line-buffered input, Ctrl-D para sair
+		fmt.Println("(readline mode: Ctrl-D to exit, Ctrl-C sends ^C to remote)")
+		go h.readlineLoop(errorChan)
+	}
 
 	// Goroutine 2: Remote connection → Local stdout (output da vítima → nós)
 	go h.relayRemoteToLocal(errorChan)
@@ -106,7 +130,95 @@ func (h *Handler) Start() error {
 	return err
 }
 
-// relayLocalToRemote lê do stdin local e envia para a shell remota
+// readlineLoop lê input linha por linha (para shells não-PTY como PowerShell)
+// Usa liner para edição de linha com suporte a setas
+func (h *Handler) readlineLoop(errorChan chan error) {
+	// Cria instância liner
+	line := liner.NewLiner()
+	defer line.Close()
+
+	// Configura comportamento
+	line.SetCtrlCAborts(false) // Ctrl-C não aborta (gera erro especial)
+	line.SetMultiLineMode(false)
+	line.SetBeep(false) // Sem beep em erros
+
+	// Carrega histórico se existir (da sessão do menu principal)
+	historyPath := os.ExpandEnv("$HOME/.gummy/shell_history")
+	if f, err := os.Open(historyPath); err == nil {
+		line.ReadHistory(f)
+		f.Close()
+	}
+
+	// Channel para capturar Ctrl-C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+	defer signal.Stop(sigChan)
+
+	// Goroutine para processar Ctrl-C
+	ctrlCPressed := make(chan struct{}, 1)
+	go func() {
+		for range sigChan {
+			// Notifica que Ctrl-C foi pressionado
+			select {
+			case ctrlCPressed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	for {
+		// Tenta ler linha
+		input, err := line.Prompt("")
+
+		// Verifica se Ctrl-C foi pressionado
+		select {
+		case <-ctrlCPressed:
+			// Envia ^C para shell remota
+			h.conn.Write([]byte{0x03})
+			fmt.Println("^C")
+			continue
+		default:
+		}
+
+		if err != nil {
+			if err == liner.ErrPromptAborted {
+				// Ctrl-C durante o prompt
+				h.conn.Write([]byte{0x03})
+				fmt.Println("^C")
+				continue
+			}
+
+			if err == io.EOF {
+				// Ctrl-D - sair
+				fmt.Print(ui.ReturningToMenu())
+				errorChan <- io.EOF
+				return
+			}
+
+			// Erro real
+			errorChan <- fmt.Errorf("liner error: %w", err)
+			return
+		}
+
+		// Adiciona ao histórico local
+		line.AppendHistory(input)
+
+		// Envia linha completa
+		_, writeErr := h.conn.Write([]byte(input + "\n"))
+		if writeErr != nil {
+			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
+			return
+		}
+	}
+
+	// Salva histórico ao sair
+	if f, err := os.Create(historyPath); err == nil {
+		line.WriteHistory(f)
+		f.Close()
+	}
+}
+
+// relayLocalToRemote lê do stdin local e envia para a shell remota (modo raw/PTY)
 // Usuário digita comando → enviado para vítima
 func (h *Handler) relayLocalToRemote(errorChan chan error) {
 	buffer := make([]byte, 4096)
@@ -202,15 +314,18 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 }
 
 // attemptPTYUpgrade tenta fazer upgrade da shell para PTY
-func (h *Handler) attemptPTYUpgrade() {
+// Retorna true se bem-sucedido
+func (h *Handler) attemptPTYUpgrade() bool {
 	upgrader := NewPTYUpgrader(h.conn, h.sessionID)
 
 	err := upgrader.TryUpgrade()
 	if err == nil {
 		// PTY upgrade bem-sucedido - drenar output de setup
 		h.drainSetupOutput()
+		return true
 	}
-	// Completamente silencioso - sem output para o usuário
+	// Falhou ou não foi possível fazer upgrade
+	return false
 }
 
 // drainSetupOutput drena output dos comandos de setup do PTY
@@ -234,44 +349,40 @@ func (h *Handler) drainSetupOutput() {
 
 // drainBeforeInteractive drena qualquer comando residual antes da shell interativa
 func (h *Handler) drainBeforeInteractive() {
-	// Pausa para dar tempo para detecção de whoami terminar
-	time.Sleep(1 * time.Second)
+	// Pausa para dar tempo para detecção de whoami terminar (em background)
+	time.Sleep(1200 * time.Millisecond)
 
-	// Envia enter para gerar novo prompt limpo
-	h.conn.Write([]byte("\n"))
+	// Drena tudo que estiver disponível IMEDIATAMENTE (não esperamos mais)
+	buffer := make([]byte, 8192)
+	allOutput := ""
 
-	// Aguarda o novo prompt aparecer
-	time.Sleep(300 * time.Millisecond)
-
-	// Drena apenas comandos antigos, preservando o prompt atual
-	buffer := make([]byte, 1024)
-	promptBuffer := ""
-
-	h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-
+	// Lê tudo disponível rapidamente
+	h.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	for {
 		n, err := h.conn.Read(buffer)
 		if err != nil || n == 0 {
 			break
 		}
+		allOutput += string(buffer[:n])
+	}
+	h.conn.SetReadDeadline(time.Time{})
 
-		data := string(buffer[:n])
-		promptBuffer += data
-
-		// Se parece com um prompt no final, para de drenar
-		lines := strings.Split(promptBuffer, "\n")
-		if len(lines) > 0 {
-			lastLine := strings.TrimSpace(lines[len(lines)-1])
-			// Se termina com $ ou # ou >, provavelmente é um prompt
-			if strings.HasSuffix(lastLine, "$") || strings.HasSuffix(lastLine, "#") || strings.HasSuffix(lastLine, ">") {
-				// Mostra o prompt atual
-				os.Stdout.Write([]byte(lastLine))
-				break
+	// Se tem output, procura pelo último prompt
+	if len(allOutput) > 0 {
+		lines := strings.Split(allOutput, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			// PowerShell prompt: "PS C:\...\...> "
+			// Bash prompt: ends with $ or #
+			if strings.HasPrefix(line, "PS ") && strings.HasSuffix(line, "> ") {
+				os.Stdout.Write([]byte(line + "\n"))
+				return
+			} else if strings.HasSuffix(line, "$") || strings.HasSuffix(line, "#") || strings.HasSuffix(line, ">") {
+				os.Stdout.Write([]byte(line + "\n"))
+				return
 			}
 		}
 	}
-
-	h.conn.SetReadDeadline(time.Time{})
 }
 
 // isConnectionAlive testa se a conexão está realmente viva
