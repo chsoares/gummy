@@ -25,4 +25,8 @@ and referenced during planning sessions.
 
 ## Ideas and future work
 
-<!-- Add future ideas here when they are discussed and deferred. -->
+### Post-1.0
+
+- [ ] Add AMSI bypass
+- [ ] Add SpawnAs via RunasCs.exe
+- [ ] Consider adding keylogger and screenshot capabilities
